@@ -1,0 +1,35 @@
+version: "3.8"
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: development
+      COBALT_URL: "http://cobalt-api:9000"
+    depends_on:
+      - cobalt-api
+
+  cobalt-api:
+    image: ghcr.io/imputnet/cobalt:10
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    environment:
+    # server real api
+      API_URL: "http://localhost:9000"
+      CORS_WILDCARD: "1"
+      RATE_LIMIT_MAX: "100"
+      RATE_LIMIT_WINDOW: "60"
+      DURATION_LIMIT: "10800"
+
+  watchtower:
+    image: containrrr/watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 3600 --cleanup

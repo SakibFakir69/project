@@ -1,0 +1,50 @@
+import { downloadController } from "./downloader.controller.js";
+export async function downloadRoutes(app) {
+    app.post("/video/formats", {
+        config: {
+            rateLimit: {
+                max: 30,
+                timeWindow: "1 minute",
+            },
+        },
+        schema: {
+            body: {
+                type: "object",
+                required: ["url"],
+                properties: { url: { type: "string" } },
+            },
+        },
+    }, downloadController.getVideoInfo);
+    app.post("/video/download", {
+        config: {
+            rateLimit: {
+                max: 30,
+                timeWindow: "1 minute",
+            },
+        },
+        schema: {
+            body: {
+                type: "object",
+                required: ["url"],
+                properties: {
+                    url: { type: "string" },
+                    type: {
+                        type: "string",
+                        enum: ["video", "audio"],
+                        default: "video",
+                    },
+                    quality: {
+                        type: "string",
+                        enum: ["144", "240", "360", "480", "720", "1080", "1440", "2160"],
+                        default: "720",
+                    },
+                    audioFormat: {
+                        type: "string",
+                        enum: ["mp3", "m4a", "opus", "wav"],
+                    },
+                },
+            },
+        },
+    }, downloadController.getDownloadLink);
+}
+//# sourceMappingURL=downloader.route.js.map
