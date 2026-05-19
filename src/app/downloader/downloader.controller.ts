@@ -86,9 +86,10 @@ const proxyArgs = getProxyArgs() || [];
 
 async function getCobaltDownloadUrl(
   url: string,
-  quality: string = "720",
-  mode: string = "auto"
+  quality: string = "720" // Default acceptable strings for v10: "1080", "720", "480", etc.
 ): Promise<{ url: string; filename: string; type: string }> {
+  console.log("Routing request to Cobalt Instance:", process.env.COBALT_URL);
+
   const response = await fetch(`${process.env.COBALT_URL}/`, {
     method: "POST",
     headers: {
@@ -97,8 +98,8 @@ async function getCobaltDownloadUrl(
     },
     body: JSON.stringify({
       url,
-      videoQuality: quality,
-      downloadMode: mode,
+      vQuality: quality,          // FIXED: videoQuality changed to vQuality in v10
+      filenamePattern: "classic", // FIXED: downloadMode dropped; use filenamePattern instead
     }),
   });
 
@@ -106,7 +107,7 @@ async function getCobaltDownloadUrl(
     throw new Error(`Cobalt error: ${response.status}`);
   }
 
-  const data = await response.json();
+  const data = (await response.json()) as any;
 
   switch (data.status) {
     case "tunnel":
@@ -152,7 +153,7 @@ export const getVideoInfo = async (
   if (isCobaltPlatform(url)) {
     console.log(url , 'tik tok or yt')
     try {
-      const result = await getCobaltDownloadUrl(url, "720", "auto");
+      const result = await getCobaltDownloadUrl(url, "720");
       console.log(result)
 
       return reply.code(200).send({
@@ -230,6 +231,7 @@ export const getDownloadLink = async (
 
   // ── YouTube & TikTok → Cobalt ─────────────────────────────────────────────
   if (isCobaltPlatform(url)) {
+    console.log(isCobaltPlatform(url))
     try {
       const result = await getCobaltDownloadUrl(url, quality);
       return reply.code(200).send({
