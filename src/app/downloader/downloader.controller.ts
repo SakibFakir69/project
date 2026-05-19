@@ -103,8 +103,8 @@ async function getCobaltDownloadUrl(
     },
     body: JSON.stringify({
       url,
-      vQuality: cleanQuality,     // Use the sanitized clean quality string
-      filenamePattern: "classic", // Valid Cobalt v10 option
+      videoQuality: cleanQuality,     // Use the sanitized clean quality string
+      filenameStyle: "classic", // Valid Cobalt v10 option
     }),
   });
 
