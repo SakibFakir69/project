@@ -89,7 +89,6 @@ async function getCobaltDownloadUrl(
   quality: string = "720" // Default acceptable strings for v10: "1080", "720", "480", etc.
 ): Promise<{ url: string; filename: string; type: string }> {
   console.log("Routing request to Cobalt Instance:", process.env.COBALT_URL);
-
   const response = await fetch(`${process.env.COBALT_URL}/`, {
     method: "POST",
     headers: {
