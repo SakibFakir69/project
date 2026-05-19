@@ -84,11 +84,17 @@ const proxyArgs = getProxyArgs() || [];
 
 // ── Cobalt Service ────────────────────────────────────────────────────────────
 
+// ── Cobalt Service ────────────────────────────────────────────────────────────
+
 async function getCobaltDownloadUrl(
   url: string,
-  quality: string = "720" // Default acceptable strings for v10: "1080", "720", "480", etc.
+  quality: string = "720"
 ): Promise<{ url: string; filename: string; type: string }> {
   console.log("Routing request to Cobalt Instance:", process.env.COBALT_URL);
+
+  // SANITIZATION: If quality is "720p", convert it to "720". If it's "1080p", convert to "1080".
+  const cleanQuality = quality.toString().toLowerCase().replace("p", "");
+
   const response = await fetch(`${process.env.COBALT_URL}/`, {
     method: "POST",
     headers: {
@@ -97,12 +103,15 @@ async function getCobaltDownloadUrl(
     },
     body: JSON.stringify({
       url,
-      vQuality: quality,          // FIXED: videoQuality changed to vQuality in v10
-      filenamePattern: "classic", // FIXED: downloadMode dropped; use filenamePattern instead
+      vQuality: cleanQuality,     // Use the sanitized clean quality string
+      filenamePattern: "classic", // Valid Cobalt v10 option
     }),
   });
 
   if (!response.ok) {
+    // If it still fails, let's log the body text from Cobalt so you can see exactly why!
+    const errorBody = await response.text().catch(() => "No error body");
+    console.error("Cobalt rejected payload with text:", errorBody);
     throw new Error(`Cobalt error: ${response.status}`);
   }
 
