@@ -6,7 +6,7 @@ import { downloadRoutes } from "./app/downloader/downloader.route.js";
 import cors  from '@fastify/cors'
 import { fastifyRateLimitMiddleware } from "./middleware/index.js";
 import { initCookies } from "./utils/cookies.js";
-import { tiktokRoutes } from "./app/tiktok/tiktok.route.js";
+
 
 
 initCookies();
