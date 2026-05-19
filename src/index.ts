@@ -8,7 +8,6 @@ import { fastifyRateLimitMiddleware } from "./middleware/index.js";
 import { initCookies } from "./utils/cookies.js";
 
 
-
 initCookies();
 
 const app = fastify({
