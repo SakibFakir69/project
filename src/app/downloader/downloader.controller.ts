@@ -89,7 +89,7 @@ async function getCobaltDownloadUrl(
   quality: string = "720",
   mode: string = "auto"
 ): Promise<{ url: string; filename: string; type: string }> {
-  const response = await fetch(`${COBALT_URL}/`, {
+  const response = await fetch(`${process.env.COBALT_URL}/`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
