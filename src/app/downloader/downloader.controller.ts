@@ -15,35 +15,12 @@ import type { VideoQuality, DownloadType, AudioFormat } from "../../types/index.
 
 const execFilePromise = promisify(execFile);
 
-const COBALT_URL = process.env.COBALT_URL || "http://localhost:9000";
-
 interface VideoInfoBody { url: string; }
 interface DownloadBody {
   url: string;
   type?: DownloadType;
   quality?: VideoQuality;
   audioFormat?: AudioFormat;
-}
-
-// ── Platform Detection ────────────────────────────────────────────────────────
-
-function isYouTubeUrl(url: string): boolean {
-  try {
-    const { hostname } = new URL(url);
-    return /(?:^|\.)(?:youtube\.com|youtu\.be)$/i.test(hostname);
-  } catch { return false; }
-}
-
-function isTikTokUrl(url: string): boolean {
-  try {
-    const { hostname } = new URL(url);
-    const lowerHost = hostname.toLowerCase();
-    return lowerHost === "tiktok.com" || lowerHost.endsWith(".tiktok.com");
-  } catch { return false; }
-}
-
-function isCobaltPlatform(url: string): boolean {
-  return isYouTubeUrl(url) || isTikTokUrl(url);
 }
 
 // ── Error Classifier ──────────────────────────────────────────────────────────
@@ -64,15 +41,14 @@ function buildYtDlpArgs(url: string, extra: string[]): string[] {
   const referer = getReferer(url);
   const cookie  = getCookieFile(url);
   const ua      = getRandomUserAgent();
-
-const proxyArgs = getProxyArgs() || [];
+  const proxyArgs = getProxyArgs() || [];
 
   const args: string[] = [
     "--no-check-certificate",
     "--no-playlist",
     "--socket-timeout", String(TIMEOUTS.socket),
     "--user-agent", ua,
-    ...proxyArgs, // Always inject proxy configuration arguments securely
+    ...proxyArgs,
     ...(referer ? ["--add-header", `Referer: ${referer}`] : []),
     ...extra,
     url,
@@ -84,15 +60,12 @@ const proxyArgs = getProxyArgs() || [];
 
 // ── Cobalt Service ────────────────────────────────────────────────────────────
 
-// ── Cobalt Service ────────────────────────────────────────────────────────────
-
 async function getCobaltDownloadUrl(
   url: string,
   quality: string = "720"
 ): Promise<{ url: string; filename: string; type: string }> {
-  console.log("Routing request to Cobalt Instance:", process.env.COBALT_URL);
+  console.log("[Cobalt] Attempting download for:", url);
 
-  // SANITIZATION: If quality is "720p", convert it to "720". If it's "1080p", convert to "1080".
   const cleanQuality = quality.toString().toLowerCase().replace("p", "");
 
   const response = await fetch(`${process.env.COBALT_URL}/`, {
@@ -103,15 +76,14 @@ async function getCobaltDownloadUrl(
     },
     body: JSON.stringify({
       url,
-      videoQuality: cleanQuality,     // Use the sanitized clean quality string
-      filenameStyle: "classic", // Valid Cobalt v10 option
+      videoQuality: cleanQuality,
+      filenameStyle: "classic",
     }),
   });
 
   if (!response.ok) {
-    // If it still fails, let's log the body text from Cobalt so you can see exactly why!
     const errorBody = await response.text().catch(() => "No error body");
-    console.error("Cobalt rejected payload with text:", errorBody);
+    console.error("[Cobalt] Rejected payload:", errorBody);
     throw new Error(`Cobalt error: ${response.status}`);
   }
 
@@ -120,18 +92,10 @@ async function getCobaltDownloadUrl(
   switch (data.status) {
     case "tunnel":
     case "redirect":
-      return {
-        url: data.url,
-        filename: data.filename ?? "video.mp4",
-        type: data.status,
-      };
+      return { url: data.url, filename: data.filename ?? "video.mp4", type: data.status };
 
     case "picker":
-      return {
-        url: data.picker[0].url,
-        filename: data.filename ?? "video.mp4",
-        type: "picker",
-      };
+      return { url: data.picker[0].url, filename: data.filename ?? "video.mp4", type: "picker" };
 
     case "error":
       throw new Error(data.error?.code ?? "Cobalt failed");
@@ -139,6 +103,53 @@ async function getCobaltDownloadUrl(
     default:
       throw new Error("Unknown response from Cobalt");
   }
+}
+
+// ── yt-dlp Info Fallback ──────────────────────────────────────────────────────
+
+async function getYtDlpInfo(url: string) {
+  const args = buildYtDlpArgs(url, [
+    "--simulate",
+    "--no-playlist",
+    "--print", "%(title)j",
+    "--print", "%(thumbnail)j",
+    "--print", "%(duration)j",
+    "--print", "%(ext)j",
+  ]);
+
+  const { stdout } = await execFilePromise("yt-dlp", args, {
+    timeout: TIMEOUTS.info,
+    maxBuffer: 1024 * 512,
+  });
+
+  const [title, thumbnail, duration, ext] = stdout
+    .trim()
+    .split("\n")
+    .map((line) => {
+      try { return JSON.parse(line); }
+      catch { return null; }
+    });
+
+  if (!title) throw new Error("Video not found via yt-dlp");
+
+  return { title, thumbnail, duration, ext };
+}
+
+// ── yt-dlp Download Fallback ──────────────────────────────────────────────────
+
+async function getYtDlpDownloadUrl(url: string) {
+  const args = buildYtDlpArgs(url, ["-f", "best", "--get-url"]);
+
+  const { stdout } = await execFilePromise("yt-dlp", args, {
+    timeout: TIMEOUTS.url,
+    maxBuffer: 1024 * 256,
+  });
+
+  const [videoUrl, audioUrl] = stdout.trim().split("\n").filter(Boolean);
+
+  if (!videoUrl) throw new Error("No download URL found via yt-dlp");
+
+  return { videoUrl, audioUrl: audioUrl ?? null };
 }
 
 // ── 1. Get Video Info ─────────────────────────────────────────────────────────
@@ -156,71 +167,42 @@ export const getVideoInfo = async (
     return reply.code(400).send({ success: false, message: "Invalid or unsupported URL" });
   }
 
-  // FIXED: Route YouTube & TikTok directly through Cobalt for metadata calculations 
-  // to prevent throwing signature and DRM errors on raw terminal execution.
-  if (isCobaltPlatform(url)) {
-    console.log(url , 'tik tok or yt')
-    try {
-      const result = await getCobaltDownloadUrl(url, "720");
-      console.log(result)
-
-      return reply.code(200).send({
-        success: true,
-        message: "Fetch video info successful (via Cobalt)",
-        data: {
-          title: result.filename.replace(/\.[^/.]+$/, ""), // Strip extension for title
-          thumbnail: null, // Cobalt stream targets don't return standalone image attachments directly
-          duration: 0,
-          ext: result.filename.split('.').pop() ?? "mp4"
-        },
-      });
-    } catch (error: any) {
-      req.log.error({ err: error, url }, "Cobalt info routing failed");
-      return reply.code(500).send({ success: false, message: error.message ?? "Cobalt metadata lookup failed" });
-    }
-  }
-
-  // Generic fallback processing engine
+  // ── Try Cobalt First ────────────────────────────────────────────────────────
   try {
-    const args = buildYtDlpArgs(url, [
-      "--simulate",
-      "--no-playlist",
-      "--print", "%(title)j",
-      "--print", "%(thumbnail)j",
-      "--print", "%(duration)j",
-      "--print", "%(ext)j",
-    ]);
-
-    const { stdout } = await execFilePromise("yt-dlp", args, {
-      timeout: TIMEOUTS.info,
-      maxBuffer: 1024 * 512,
-    });
-
-    const [title, thumbnail, duration, ext] = stdout
-      .trim()
-      .split("\n")
-      .map((line) => {
-        try { return JSON.parse(line); }
-          catch { return null; }
-      });
-
-    if (!title) {
-      return reply.code(404).send({ success: false, message: "Video not found" });
-    }
+    const result = await getCobaltDownloadUrl(url, "720");
+    console.log("[Cobalt] Info success for:", url);
 
     return reply.code(200).send({
       success: true,
-      message: "Fetch video info successful",
+      source: "cobalt",
+      message: "Fetch video info successful (via Cobalt)",
+      data: {
+        title: result.filename.replace(/\.[^/.]+$/, ""),
+        thumbnail: null,
+        duration: 0,
+        ext: result.filename.split(".").pop() ?? "mp4",
+      },
+    });
+  } catch (cobaltError: any) {
+    console.warn("[Cobalt] Info failed, falling back to yt-dlp:", cobaltError.message);
+  }
+
+  // ── Fallback: yt-dlp ────────────────────────────────────────────────────────
+  try {
+    const { title, thumbnail, duration, ext } = await getYtDlpInfo(url);
+
+    return reply.code(200).send({
+      success: true,
+      source: "ytdlp",
+      message: "Fetch video info successful (via yt-dlp)",
       data: { title, thumbnail, duration, ext },
     });
-
-  } catch (error: any) {
-    const stderr = error?.stderr ?? error?.message ?? "";
-    req.log.error({ err: error, stderr, url }, "getVideoInfo failed");
+  } catch (ytdlpError: any) {
+    req.log.error({ err: ytdlpError, url }, "Both Cobalt and yt-dlp failed for info");
     return reply.code(500).send({
       success: false,
-      message: "Failed to fetch video info",
-      ...(process.env.NODE_ENV === "development" && { error: error?.message }),
+      message: "Failed to fetch video info from all sources",
+      ...(process.env.NODE_ENV === "development" && { error: ytdlpError?.message }),
     });
   }
 };
@@ -237,64 +219,43 @@ export const getDownloadLink = async (
     return reply.code(400).send({ success: false, message: "Invalid or missing URL" });
   }
 
-  // ── YouTube & TikTok → Cobalt ─────────────────────────────────────────────
-  if (isCobaltPlatform(url)) {
-    console.log(isCobaltPlatform(url))
-    try {
-      const result = await getCobaltDownloadUrl(url, quality);
-      return reply.code(200).send({
-        success: true,
-        source: "cobalt",
-        platform: isYouTubeUrl(url) ? "youtube" : "tiktok",
-        data: {
-          videoUrl: result.url,
-          filename: result.filename,
-          type: result.type,
-        },
-      });
-    } catch (error: any) {
-      req.log.error({ err: error, url }, "Cobalt failed");
-      return reply.code(500).send({
-        success: false,
-        message: error.message ?? "Cobalt failed",
-        ...(process.env.NODE_ENV === "development" && { error: error?.message }),
-      });
-    }
+  // ── Try Cobalt First ────────────────────────────────────────────────────────
+  try {
+    const result = await getCobaltDownloadUrl(url, String(quality));
+    console.log("[Cobalt] Download success for:", url);
+
+    return reply.code(200).send({
+      success: true,
+      source: "cobalt",
+      data: {
+        videoUrl: result.url,
+        filename: result.filename,
+        type: result.type,
+      },
+    });
+  } catch (cobaltError: any) {
+    console.warn("[Cobalt] Download failed, falling back to yt-dlp:", cobaltError.message);
   }
 
-  // ── Other Platforms → yt-dlp ──────────────────────────────────────────────
+  // ── Fallback: yt-dlp ────────────────────────────────────────────────────────
   try {
-    // FIXED: Proxy values are now handled explicitly inside buildYtDlpArgs implementation securely
-    const args = buildYtDlpArgs(url, ["-f", "best", "--get-url"]);
-
-    const { stdout } = await execFilePromise("yt-dlp", args, {
-      timeout: TIMEOUTS.url,
-      maxBuffer: 1024 * 256,
-    });
-
-    const [videoUrl, audioUrl] = stdout.trim().split("\n").filter(Boolean);
-
-    if (!videoUrl) {
-      return reply.code(500).send({ success: false, message: "No download URL found" });
-    }
+    const { videoUrl, audioUrl } = await getYtDlpDownloadUrl(url);
 
     return reply.code(200).send({
       success: true,
       source: "ytdlp",
-      platform: "other",
       data: {
         videoUrl,
-        audioUrl: audioUrl ?? null,
+        audioUrl,
       },
     });
-
-  } catch (error: any) {
-    req.log.error({ err: error, url }, "yt-dlp failed");
-    const stderr = error?.stderr ?? error?.message ?? "";
+  } catch (ytdlpError: any) {
+    req.log.error({ err: ytdlpError, url }, "Both Cobalt and yt-dlp failed for download");
+    const stderr = ytdlpError?.stderr ?? ytdlpError?.message ?? "";
     return reply.code(500).send({
       success: false,
       message: classifyError(stderr),
-      ...(process.env.NODE_ENV === "development" && { error: error?.message }),
+      ...(process.env.NODE_ENV === "development" && { error: ytdlpError?.message }),
     });
   }
 };
