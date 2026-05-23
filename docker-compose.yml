@@ -18,7 +18,7 @@ services:
     ports:
       - "9000:9000"
     environment:
-      API_URL: "https://downtubebest.duckdns.org"   # ✅ Change to your VPS IP
+      API_URL: "http://downtubebest.duckdns.org:5000"   # ✅ Change to your VPS IP
       CORS_WILDCARD: "1"
       RATE_LIMIT_MAX: "100"
       RATE_LIMIT_WINDOW: "60"
