@@ -56,14 +56,19 @@ async function resolveRedirectUrl(url: string): Promise<string> {
       redirect: "follow",
       signal: AbortSignal.timeout(8000),
       headers: {
-        // Pretend to be a browser so TikTok/Instagram don't block the HEAD request
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
           "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
       },
     });
-    // res.url is the final URL after all redirects
-    const resolved = res.url && res.url !== "" ? res.url : url;
+
+    let resolved = res.url && res.url !== "" ? res.url : url;
+
+    // FIX: Clean the URL for Cobalt. Strip out everything after the "?" if it contains tracking garbage.
+    if (resolved.includes("tiktok.com") && resolved.includes("?")) {
+      resolved = resolved.split("?")[0];
+    }
+
     console.log(`[Resolver] ${url} → ${resolved}`);
     return resolved;
   } catch (err: any) {
@@ -343,19 +348,22 @@ export const getDownloadLink = async (
   // FALLBACK: yt-dlp
   // ─────────────────────────────────────────────────────────────
   try {
-    const { videoUrl, audioUrl } =
-      await getYtDlpDownloadUrl(resolvedUrl);
+    const { videoUrl, audioUrl } = await getYtDlpDownloadUrl(resolvedUrl);
+
+    // FIX: Just like Cobalt, we must tunnel yt-dlp outputs so the mobile client doesn't hit a 403 error.
+    let finalVideoUrl = videoUrl;
+    
+    // Always proxy fallback links through our stream pipeline
+    finalVideoUrl = `${BASE_URL}/tunnel?url=` + encodeURIComponent(videoUrl);
 
     return reply.code(200).send({
       success: true,
       source: "ytdlp",
-
-      type: audioUrl ? "split" : "redirect",
-
+      type: audioUrl ? "split" : "tunnel", // Changed from 'redirect' to 'tunnel'
       data: {
-        videoUrl,
-        audioUrl,
-        type: audioUrl ? "split" : "redirect",
+        videoUrl: finalVideoUrl,
+        audioUrl: audioUrl,
+        type: audioUrl ? "split" : "tunnel",
       },
     });
 
