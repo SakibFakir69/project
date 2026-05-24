@@ -1,3 +1,5 @@
+import dotenv from "dotenv";
+dotenv.config();
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { FastifyRequest, FastifyReply } from "fastify";
@@ -12,7 +14,8 @@ import {
 } from "../../constant/index.contant.js";
 import { getProxyArgs } from "../../utils/proxy.utils.js";
 import type { VideoQuality, DownloadType, AudioFormat } from "../../types/index.js";
-
+const BASE_URL =
+  process.env.API_URL ?? "https://downtubebest.duckdns.org";
 const execFilePromise = promisify(execFile);
 interface TunnelQuery {
   url?: string;
@@ -308,7 +311,7 @@ export const getDownloadLink = async (
 
     if (result.type === "tunnel") {
       finalVideoUrl =
-        `${process.env.API_URL}/tunnel?url=` +
+        `${BASE_URL}/tunnel?url=` +
         encodeURIComponent(result.url);
     }
     return reply.code(200).send({
