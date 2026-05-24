@@ -15,7 +15,11 @@ import {
 import { getProxyArgs } from "../../utils/proxy.utils.js";
 import type { VideoQuality, DownloadType, AudioFormat } from "../../types/index.js";
 const BASE_URL =
-  process.env.API_URL ?? "https://downtubebest.duckdns.org";
+  process.env.API_URL && process.env.API_URL !== "undefined"
+    ? process.env.API_URL
+    : "https://downtubebest.duckdns.org";
+
+
 const execFilePromise = promisify(execFile);
 interface TunnelQuery {
   url?: string;
