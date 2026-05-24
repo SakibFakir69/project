@@ -14,6 +14,9 @@ import { getProxyArgs } from "../../utils/proxy.utils.js";
 import type { VideoQuality, DownloadType, AudioFormat } from "../../types/index.js";
 
 const execFilePromise = promisify(execFile);
+interface TunnelQuery {
+  url?: string;
+}
 
 interface VideoInfoBody { url: string; }
 interface DownloadBody {
@@ -279,55 +282,100 @@ export const getDownloadLink = async (
   const { url, quality = "720" } = req.body;
 
   if (!url || typeof url !== "string" || !isUrlSafe(url)) {
-    return reply.code(400).send({ success: false, message: "Invalid or missing URL" });
+    return reply.code(400).send({
+      success: false,
+      message: "Invalid or missing URL",
+    });
   }
 
-  // Resolve short URL once — reuse for both Cobalt and yt-dlp
+  // Resolve short URLs first
   const resolvedUrl = await resolveRedirectUrl(url);
 
-  // ── Try Cobalt First ────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────
+  // TRY COBALT FIRST
+  // ─────────────────────────────────────────────────────────────
   try {
-    const result = await getCobaltDownloadUrl(resolvedUrl, String(quality));
+    const result = await getCobaltDownloadUrl(
+      resolvedUrl,
+      String(quality)
+    );
+
     console.log("[Cobalt] Download success for:", resolvedUrl);
 
-    // FIX 4: type is now correctly at the TOP LEVEL to match what DownloadPage.tsx reads
-    // (response.data.type) AND also inside data.type for backward compat
+    // IMPORTANT:
+    // Proxy tunnel URLs through YOUR backend
+    let finalVideoUrl = result.url;
+
+    if (result.type === "tunnel") {
+      finalVideoUrl =
+        `${process.env.API_URL}/tunnel?url=` +
+        encodeURIComponent(result.url);
+    }
+
     return reply.code(200).send({
       success: true,
       source: "cobalt",
-      type: result.type,       // ← top-level, matches: response.data.type in the app
+
+      // top-level type
+      type: result.type,
+
       data: {
-        videoUrl: result.url,
-        audioUrl: result.audioUrl, // ← now properly returned from picker responses
+        videoUrl: finalVideoUrl,
+        audioUrl: result.audioUrl,
         filename: result.filename,
         type: result.type,
       },
     });
+
   } catch (cobaltError: any) {
-    console.warn("[Cobalt] Download failed, falling back to yt-dlp:", cobaltError.message);
+    console.warn(
+      "[Cobalt] Download failed, falling back to yt-dlp:",
+      cobaltError.message
+    );
   }
 
-  // ── Fallback: yt-dlp ────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────
+  // FALLBACK: yt-dlp
+  // ─────────────────────────────────────────────────────────────
   try {
-    const { videoUrl, audioUrl } = await getYtDlpDownloadUrl(resolvedUrl);
+    const { videoUrl, audioUrl } =
+      await getYtDlpDownloadUrl(resolvedUrl);
 
     return reply.code(200).send({
       success: true,
       source: "ytdlp",
-      type: audioUrl ? "split" : "redirect",  // ← also add type here for consistency
+
+      type: audioUrl ? "split" : "redirect",
+
       data: {
         videoUrl,
         audioUrl,
         type: audioUrl ? "split" : "redirect",
       },
     });
+
   } catch (ytdlpError: any) {
-    req.log.error({ err: ytdlpError, url: resolvedUrl }, "Both Cobalt and yt-dlp failed for download");
-    const stderr = ytdlpError?.stderr ?? ytdlpError?.message ?? "";
+
+    req.log.error(
+      {
+        err: ytdlpError,
+        url: resolvedUrl,
+      },
+      "Both Cobalt and yt-dlp failed for download"
+    );
+
+    const stderr =
+      ytdlpError?.stderr ??
+      ytdlpError?.message ??
+      "";
+
     return reply.code(500).send({
       success: false,
       message: classifyError(stderr),
-      ...(process.env.NODE_ENV === "development" && { error: ytdlpError?.message }),
+
+      ...(process.env.NODE_ENV === "development" && {
+        error: ytdlpError?.message,
+      }),
     });
   }
 };
@@ -354,8 +402,55 @@ export const resolveUrl = async (
   }
 };
 
+ const tunnel = async (
+  req: FastifyRequest<{ Querystring: TunnelQuery }>,
+  reply: FastifyReply
+) => {
+  try {
+    const { url } = req.query;
+
+    if (!url) {
+      return reply.code(400).send({
+        success: false,
+        message: "Missing tunnel URL",
+      });
+    }
+
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+      },
+    });
+
+    if (!response.ok) {
+      return reply.code(response.status).send({
+        success: false,
+        message: "Failed to fetch stream",
+      });
+    }
+
+    const contentType =
+      response.headers.get("content-type") || "video/mp4";
+
+    reply.header("Content-Type", contentType);
+    reply.header("Access-Control-Allow-Origin", "*");
+
+    return reply.send(response.body);
+
+  } catch (error: any) {
+    console.log(error);
+
+    return reply.code(500).send({
+      success: false,
+      message: error.message || "Tunnel failed",
+    });
+  }
+};
+
 export const downloadController = {
   getVideoInfo,
   getDownloadLink,
   resolveUrl,   // register this route in your router if needed
+  tunnel
 };
