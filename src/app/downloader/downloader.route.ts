@@ -42,7 +42,7 @@ app.get("/tunnel",downloadController.tunnel);
           },
           quality: {
             type: "string",
-            enum: ["144", "240", "360", "480", "720", "1080", "1440", "2160"],
+            enum: ["best","144", "240", "360", "480", "720", "1080", "1440", "2160"],
             default: "720",
           },
           audioFormat: {
