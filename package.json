@@ -2,7 +2,7 @@
   "type": "module",
   "scripts": {
     "dev": "nodemon src/server.ts",
-    "build": "curl -fsSL https://deno.land/install.sh | sh && tsc",
+    "build": "tsc",
     "start": "node dist/server.js"
   },
   "dependencies": {

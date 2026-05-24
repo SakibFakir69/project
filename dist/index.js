@@ -5,7 +5,6 @@ import { downloadRoutes } from "./app/downloader/downloader.route.js";
 import cors from '@fastify/cors';
 import { fastifyRateLimitMiddleware } from "./middleware/index.js";
 import { initCookies } from "./utils/cookies.js";
-import { tiktokRoutes } from "./app/tiktok/tiktok.route.js";
 initCookies();
 const app = fastify({
     logger: true
@@ -24,7 +23,6 @@ app.get("/", async (req, reply) => {
 });
 // ROUTES
 app.register(downloadRoutes, { prefix: '/api/v1' });
-app.register(tiktokRoutes, { prefix: "/api/v1" });
 // HEALTH CHECK
 app.get('/home', (request, reply) => {
     return { message: "Welome to authservices" };

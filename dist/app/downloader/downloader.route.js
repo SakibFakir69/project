@@ -15,6 +15,8 @@ export async function downloadRoutes(app) {
             },
         },
     }, downloadController.getVideoInfo);
+    app.get("/tunnel", downloadController.tunnel);
+    app.get("/resolve-url", downloadController.resolveUrl);
     app.post("/video/download", {
         config: {
             rateLimit: {
