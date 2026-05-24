@@ -88,17 +88,21 @@ async function resolveRedirectUrl(url: string): Promise<string> {
 }
 
 // ── yt-dlp Args Builder ───────────────────────────────────────────────────────
+// ── yt-dlp Args Builder ───────────────────────────────────────────────────────
 function buildYtDlpArgs(url: string, extra: string[]): string[] {
   const referer   = getReferer(url);
   const cookie    = getCookieFile(url);
-  const ua        = getRandomUserAgent();
+  // Remove or comment out: const ua = getRandomUserAgent();
   const proxyArgs = getProxyArgs() || [];
 
   const args: string[] = [
     "--no-check-certificate",
     "--no-playlist",
     "--socket-timeout", String(TIMEOUTS.socket),
-    "--user-agent", ua,
+    
+    
+    "--impersonate", "chrome", 
+    
     ...proxyArgs,
     ...(referer ? ["--add-header", `Referer: ${referer}`] : []),
     ...extra,
@@ -393,6 +397,7 @@ export const resolveUrl = async (
 };
 
 // ── 4. Tunnel ─────────────────────────────────────────────────────────────────
+// ── 4. Tunnel ─────────────────────────────────────────────────────────────────
 const tunnel = async (
   req: FastifyRequest<{ Querystring: TunnelQuery }>,
   reply: FastifyReply,
@@ -411,8 +416,6 @@ const tunnel = async (
     return reply.code(400).send({ success: false, message: "Invalid URL format" });
   }
 
-  // ✅ Check against CDN allowlist — no isUrlSafe() here since CDN URLs
-  // won't be in ALLOWED_INPUT_HOSTS, only in ALLOWED_TUNNEL_HOSTS
   const isAllowedHost = ALLOWED_TUNNEL_HOSTS.some(h => parsedHost.endsWith(h));
   if (!isAllowedHost) {
     console.warn("[Tunnel] Blocked host:", parsedHost);
@@ -420,16 +423,23 @@ const tunnel = async (
   }
 
   try {
+    // Determine the original referer header to match what the link generator used
+    const referer = url.includes("tiktok") ? "https://www.tiktok.com/" : "https://www.instagram.com/";
+
     const response = await fetch(url, {
       signal: AbortSignal.timeout(30000),
       headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+        // Match the user agent that yt-dlp commonly provides under standard chrome impersonation
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": referer,
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
       },
     });
 
     if (!response.ok) {
-      return reply.code(response.status).send({ success: false, message: "Failed to fetch stream" });
+      console.error(`[Tunnel] Fetch failed with status ${response.status} for URL: ${url}`);
+      return reply.code(response.status).send({ success: false, message: "Failed to fetch stream from CDN" });
     }
 
     const contentLength = response.headers.get("content-length");
@@ -443,6 +453,11 @@ const tunnel = async (
     });
 
     reply.header("Content-Type", response.headers.get("content-type") || "video/mp4");
+    
+    // Support file range seeking for media players on iOS/Android
+    const contentRange = response.headers.get("content-range");
+    if (contentRange) reply.header("Content-Range", contentRange);
+
     reply.header("Access-Control-Allow-Origin", "*");
     return reply.send(response.body);
 
@@ -454,7 +469,6 @@ const tunnel = async (
     });
   }
 };
-
 export const downloadController = {
   getVideoInfo,
   getDownloadLink,
