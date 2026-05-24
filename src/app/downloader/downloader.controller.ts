@@ -1,14 +1,9 @@
-import dotenv from "dotenv";
-dotenv.config();
-
-
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { FastifyRequest, FastifyReply } from "fastify";
 
 import { buildFormatSelector, isUrlSafe } from "../../utils/download.utils.js";
 import {
-  USER_AGENT,
   getRandomUserAgent,
   getReferer,
   getCookieFile,
@@ -23,34 +18,31 @@ if (!process.env.API_URL) {
   console.warn("[Config] API_URL not set, using default:", BASE_URL);
 }
 
-const COBALT_URL = process.env.COBALT_URL ?? "http://cobalt-api:9000";
-if (!process.env.COBALT_URL) {
-  console.warn("[Config] COBALT_URL not set, using default:", COBALT_URL);
-}
+const MAX_TUNNEL_BYTES = 500 * 1024 * 1024;
 
-const MAX_TUNNEL_BYTES = 500 * 1024 * 1024; // 500 MB
-
-// Hosts that Cobalt/yt-dlp legitimately return — only these can be tunneled
 const ALLOWED_TUNNEL_HOSTS = [
   'tiktok.com',
+  'tiktokcdn.com',
+  'tiktokv.com',
   'v19-webapp.tiktok.com',
+  'v19-webapp-prime.tiktok.com',
   'v19.tiktokcdn.com',
   'googlevideo.com',
   'fbcdn.net',
   'cdninstagram.com',
   'twimg.com',
+  'video.twimg.com',
   'redd.it',
   'redditmedia.com',
   'reddituploads.com',
-  'cobalt.tools',
   'youtube.com',
 ];
 
 const execFilePromise = promisify(execFile);
 
-interface TunnelQuery  { url?: string; }
+interface TunnelQuery   { url?: string; }
 interface VideoInfoBody { url: string; }
-interface DownloadBody {
+interface DownloadBody  {
   url: string;
   type?: DownloadType;
   quality?: VideoQuality;
@@ -84,7 +76,6 @@ async function resolveRedirectUrl(url: string): Promise<string> {
 
     let resolved = res.url && res.url !== "" ? res.url : url;
 
-    // Strip TikTok tracking params — Cobalt rejects URLs with query garbage
     if (resolved.includes("tiktok.com") && resolved.includes("?")) {
       resolved = resolved.split("?")[0];
     }
@@ -92,7 +83,7 @@ async function resolveRedirectUrl(url: string): Promise<string> {
     console.log(`[Resolver] ${url} → ${resolved}`);
     return resolved;
   } catch (err: any) {
-    console.warn("[Resolver] Could not resolve short URL, using original:", err?.message);
+    console.warn("[Resolver] Could not resolve, using original:", err?.message);
     return url;
   }
 }
@@ -120,7 +111,6 @@ function buildYtDlpArgs(url: string, extra: string[]): string[] {
 }
 
 // ── Cobalt Service ────────────────────────────────────────────────────────────
-// NOTE: expects a pre-resolved URL — do NOT pass short URLs here
 async function getCobaltDownloadUrl(
   resolvedUrl: string,
   quality: string = "720"
@@ -128,10 +118,15 @@ async function getCobaltDownloadUrl(
 
   console.log("[Cobalt] Attempting download for:", resolvedUrl);
 
-  const cleanQuality = quality.toString().toLowerCase().replace("p", "");
+  // Normalize quality — "best" or non-numeric → "720"
+  const validQualities = ["144","240","360","480","720","1080","1440","2160"];
+  const cleanQuality = validQualities.includes(quality.replace("p",""))
+    ? quality.replace("p","")
+    : "720";
 
-  // FIX: AbortSignal timeout so we don't hang if Cobalt is down
-  const response = await fetch(`${process.env.COBALT_URL}/`, {
+  const cobaltUrl = process.env.COBALT_URL ?? "http://cobalt-api:9000";
+
+  const response = await fetch(`${cobaltUrl}/`, {
     method: "POST",
     signal: AbortSignal.timeout(15000),
     headers: {
@@ -198,7 +193,7 @@ async function getYtDlpInfo(url: string) {
 
   const { stdout } = await execFilePromise("yt-dlp", args, {
     timeout:    TIMEOUTS.info,
-    killSignal: 'SIGKILL', // FIX: actually kill zombie processes on timeout
+    killSignal: "SIGKILL",
     maxBuffer:  1024 * 512,
   });
 
@@ -223,13 +218,13 @@ async function getYtDlpDownloadUrl(url: string) {
 
   const { stdout } = await execFilePromise("yt-dlp", args, {
     timeout:    TIMEOUTS.url,
-    killSignal: 'SIGKILL', // FIX: kill zombie processes on timeout
+    killSignal: "SIGKILL",
     maxBuffer:  1024 * 256,
   });
 
-  const urls      = stdout.trim().split("\n").filter(Boolean);
-  const videoUrl  = urls[0];
-  const audioUrl  = urls.length > 1 ? urls[1] : null;
+  const urls     = stdout.trim().split("\n").filter(Boolean);
+  const videoUrl = urls[0];
+  const audioUrl = urls.length > 1 ? urls[1] : null;
 
   if (!videoUrl) throw new Error("No download URL found via yt-dlp");
   return { videoUrl, audioUrl };
@@ -245,11 +240,14 @@ export const getVideoInfo = async (
   if (!url || typeof url !== "string") {
     return reply.code(400).send({ success: false, message: "URL is required" });
   }
-  if (!isUrlSafe(url)) {
+
+  // ✅ Resolve FIRST then safety check on resolved URL
+  const resolvedUrl = await resolveRedirectUrl(url);
+
+  if (!isUrlSafe(resolvedUrl)) {
+    console.warn("[Info] Unsafe URL rejected:", resolvedUrl);
     return reply.code(400).send({ success: false, message: "Invalid or unsupported URL" });
   }
-
-  const resolvedUrl = await resolveRedirectUrl(url);
 
   try {
     const result = await getCobaltDownloadUrl(resolvedUrl, "720");
@@ -293,16 +291,28 @@ export const getDownloadLink = async (
 ) => {
   const { url, quality = "720" } = req.body;
 
-  if (!url || typeof url !== "string" || !isUrlSafe(url)) {
+  if (!url || typeof url !== "string") {
     return reply.code(400).send({ success: false, message: "Invalid or missing URL" });
   }
 
-  // Resolve once here — getCobaltDownloadUrl no longer re-resolves
+  // ✅ Resolve FIRST — short URLs like vt.tiktok.com expand to tiktok.com
   const resolvedUrl = await resolveRedirectUrl(url);
+
+  // ✅ Safety check on RESOLVED url, not the original short url
+  if (!isUrlSafe(resolvedUrl)) {
+    console.warn("[Download] Unsafe URL rejected:", resolvedUrl);
+    return reply.code(400).send({ success: false, message: "Invalid or missing URL" });
+  }
+
+  // Normalize quality — strip "p", fallback to "720"
+  const validQualities = ["144","240","360","480","720","1080","1440","2160"];
+  const normalizedQuality = validQualities.includes(String(quality).replace("p",""))
+    ? String(quality).replace("p","")
+    : "720";
 
   // ── Try Cobalt ────────────────────────────────────────────────────────────
   try {
-    const result = await getCobaltDownloadUrl(resolvedUrl, String(quality));
+    const result = await getCobaltDownloadUrl(resolvedUrl, normalizedQuality);
     console.log("[Cobalt] Download success for:", resolvedUrl);
 
     let finalVideoUrl = result.url;
@@ -310,13 +320,18 @@ export const getDownloadLink = async (
       finalVideoUrl = `${BASE_URL}/tunnel?url=` + encodeURIComponent(result.url);
     }
 
+    // Also proxy audioUrl if present
+    const finalAudioUrl = result.audioUrl
+      ? `${BASE_URL}/tunnel?url=` + encodeURIComponent(result.audioUrl)
+      : null;
+
     return reply.code(200).send({
       success: true,
       source:  "cobalt",
       type:    result.type,
       data: {
         videoUrl: finalVideoUrl,
-        audioUrl: result.audioUrl,
+        audioUrl: finalAudioUrl,
         filename: result.filename,
         type:     result.type,
       },
@@ -330,6 +345,9 @@ export const getDownloadLink = async (
     const { videoUrl, audioUrl } = await getYtDlpDownloadUrl(resolvedUrl);
 
     const finalVideoUrl = `${BASE_URL}/tunnel?url=` + encodeURIComponent(videoUrl);
+    const finalAudioUrl = audioUrl
+      ? `${BASE_URL}/tunnel?url=` + encodeURIComponent(audioUrl)
+      : null;
 
     return reply.code(200).send({
       success: true,
@@ -337,13 +355,12 @@ export const getDownloadLink = async (
       type:    audioUrl ? "split" : "tunnel",
       data: {
         videoUrl: finalVideoUrl,
-        audioUrl: audioUrl,
+        audioUrl: finalAudioUrl,
         type:     audioUrl ? "split" : "tunnel",
       },
     });
   } catch (ytdlpError: any) {
     req.log.error({ err: ytdlpError, url: resolvedUrl }, "Both Cobalt and yt-dlp failed");
-
     const stderr = ytdlpError?.stderr ?? ytdlpError?.message ?? "";
     return reply.code(500).send({
       success: false,
@@ -353,7 +370,7 @@ export const getDownloadLink = async (
   }
 };
 
-// ── 3. Resolve URL (standalone endpoint) ─────────────────────────────────────
+// ── 3. Resolve URL ────────────────────────────────────────────────────────────
 export const resolveUrl = async (
   req: FastifyRequest<{ Querystring: { url: string } }>,
   reply: FastifyReply,
@@ -364,13 +381,12 @@ export const resolveUrl = async (
     return reply.code(400).send({ success: false, message: "url query param is required" });
   }
 
-  // FIX: safety check on the standalone resolve endpoint too
-  if (!isUrlSafe(url)) {
-    return reply.code(400).send({ success: false, message: "Invalid or unsupported URL" });
-  }
-
+  // ✅ Resolve first, then check safety on resolved URL
   try {
     const resolvedUrl = await resolveRedirectUrl(url);
+    if (!isUrlSafe(resolvedUrl)) {
+      return reply.code(400).send({ success: false, message: "Invalid or unsupported URL" });
+    }
     return reply.code(200).send({ success: true, resolvedUrl });
   } catch (err: any) {
     return reply.code(500).send({ success: false, message: "Failed to resolve URL" });
@@ -388,12 +404,7 @@ const tunnel = async (
     return reply.code(400).send({ success: false, message: "Missing tunnel URL" });
   }
 
-  // FIX 1: Safety check — no SSRF
-  if (!isUrlSafe(url)) {
-    return reply.code(403).send({ success: false, message: "URL not allowed" });
-  }
-
-  // FIX 2: Only allow known CDN hosts — prevents open proxy abuse
+  // Parse host first
   let parsedHost: string;
   try {
     parsedHost = new URL(url).hostname;
@@ -401,6 +412,8 @@ const tunnel = async (
     return reply.code(400).send({ success: false, message: "Invalid URL format" });
   }
 
+  // ✅ Check against CDN allowlist — no isUrlSafe() here since CDN URLs
+  // won't be in ALLOWED_INPUT_HOSTS, only in ALLOWED_TUNNEL_HOSTS
   const isAllowedHost = ALLOWED_TUNNEL_HOSTS.some(h => parsedHost.endsWith(h));
   if (!isAllowedHost) {
     console.warn("[Tunnel] Blocked host:", parsedHost);
@@ -409,7 +422,7 @@ const tunnel = async (
 
   try {
     const response = await fetch(url, {
-      signal: AbortSignal.timeout(30000), // FIX 3: timeout on tunnel fetch
+      signal: AbortSignal.timeout(30000),
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
@@ -420,22 +433,18 @@ const tunnel = async (
       return reply.code(response.status).send({ success: false, message: "Failed to fetch stream" });
     }
 
-    // FIX 4: Reject oversized files before streaming
     const contentLength = response.headers.get("content-length");
     if (contentLength && parseInt(contentLength) > MAX_TUNNEL_BYTES) {
       response.body?.cancel();
       return reply.code(413).send({ success: false, message: "File too large to tunnel" });
     }
 
-    // FIX 5: Cancel upstream fetch if client disconnects — prevents memory leak
     req.raw.on("close", () => {
       response.body?.cancel();
     });
 
-    const contentType = response.headers.get("content-type") || "video/mp4";
-    reply.header("Content-Type", contentType);
+    reply.header("Content-Type", response.headers.get("content-type") || "video/mp4");
     reply.header("Access-Control-Allow-Origin", "*");
-
     return reply.send(response.body);
 
   } catch (error: any) {

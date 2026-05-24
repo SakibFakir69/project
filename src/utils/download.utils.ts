@@ -13,7 +13,8 @@ type VideoQuality =
   | "720"
   | "1080"
   | "1440"
-  | "2160";
+  | "2160"
+   | "best"
 type AudioFormat = "mp3" | "m4a" | "opus" | "wav";
 
 const ALLOWED_INPUT_HOSTS = [
