@@ -7,24 +7,30 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     python3-venv \
     curl \
+    wget \
     unzip \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp
-RUN pip3 install --break-system-packages -U "yt-dlp[default,curl_ciphers]"
+# Install latest yt-dlp + curl_cffi
+RUN pip3 install --break-system-packages -U \
+    "yt-dlp[default,curl_cffi]" \
+    curl-cffi
 
 WORKDIR /app
 
 COPY package*.json ./
+
 RUN npm install
 
 COPY . .
 
-# Build TypeScript
+# Build app
 RUN npm run build
+
+# Remove dev deps
 RUN npm prune --production
 
 EXPOSE 5000
 
-# Use node directly — pass env vars via docker-compose
 CMD ["node", "dist/server.js"]

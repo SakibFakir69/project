@@ -21,12 +21,10 @@ if (!process.env.API_URL) {
 const MAX_TUNNEL_BYTES = 500 * 1024 * 1024;
 
 const ALLOWED_TUNNEL_HOSTS = [
-  'tiktok.com',
-  'tiktokcdn.com',
+  'tiktok.com',           // ✅ matches v19-webapp-prime.us.tiktok.com
+  'tiktokcdn.com',        // ✅ matches v19.tiktokcdn.com
   'tiktokv.com',
-  'v19-webapp.tiktok.com',
-  'v19-webapp-prime.tiktok.com',
-  'v19.tiktokcdn.com',
+  'tiktok-cdn.com',
   'googlevideo.com',
   'fbcdn.net',
   'cdninstagram.com',
@@ -36,6 +34,7 @@ const ALLOWED_TUNNEL_HOSTS = [
   'redditmedia.com',
   'reddituploads.com',
   'youtube.com',
+  'ytimg.com',
 ];
 
 const execFilePromise = promisify(execFile);
