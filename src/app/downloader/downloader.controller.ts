@@ -311,12 +311,10 @@ export const getDownloadLink = async (
         `${process.env.API_URL}/tunnel?url=` +
         encodeURIComponent(result.url);
     }
-
     return reply.code(200).send({
       success: true,
       source: "cobalt",
 
-      // top-level type
       type: result.type,
 
       data: {
