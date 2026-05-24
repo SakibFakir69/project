@@ -18,10 +18,15 @@ import { getProxyArgs } from "../../utils/proxy.utils.js";
 import type { VideoQuality, DownloadType, AudioFormat } from "../../types/index.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
-if (!process.env.API_URL || process.env.API_URL === "undefined") {
-  throw new Error("API_URL environment variable is required");
+const BASE_URL = process.env.API_URL ?? "https://downtubebest.duckdns.org";
+if (!process.env.API_URL) {
+  console.warn("[Config] API_URL not set, using default:", BASE_URL);
 }
-const BASE_URL = process.env.API_URL;
+
+const COBALT_URL = process.env.COBALT_URL ?? "http://cobalt-api:9000";
+if (!process.env.COBALT_URL) {
+  console.warn("[Config] COBALT_URL not set, using default:", COBALT_URL);
+}
 
 const MAX_TUNNEL_BYTES = 500 * 1024 * 1024; // 500 MB
 
