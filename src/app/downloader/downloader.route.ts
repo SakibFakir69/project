@@ -21,7 +21,7 @@ export async function downloadRoutes(app: FastifyInstance) {
   }, downloadController.getVideoInfo);
 
 
-  
+  app.get("/api/v1/resolve-url", downloadController.resolveUrl);
   app.post("/video/download", {
     config: {
       rateLimit: {

@@ -35,13 +35,40 @@ function classifyError(stderr: string): string {
   return "Failed to process video URL";
 }
 
+// ── Short URL Resolver ────────────────────────────────────────────────────────
+// Resolves redirect-based short URLs (vt.tiktok.com, youtu.be, ig.me, etc.)
+// to their full canonical URL before passing to Cobalt or yt-dlp.
+
+async function resolveRedirectUrl(url: string): Promise<string> {
+  try {
+    const res = await fetch(url, {
+      method: "HEAD",
+      redirect: "follow",
+      signal: AbortSignal.timeout(8000),
+      headers: {
+        // Pretend to be a browser so TikTok/Instagram don't block the HEAD request
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+          "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      },
+    });
+    // res.url is the final URL after all redirects
+    const resolved = res.url && res.url !== "" ? res.url : url;
+    console.log(`[Resolver] ${url} → ${resolved}`);
+    return resolved;
+  } catch (err: any) {
+    console.warn("[Resolver] Could not resolve short URL, using original:", err?.message);
+    return url;
+  }
+}
+
 // ── yt-dlp Args Builder ───────────────────────────────────────────────────────
 
 function buildYtDlpArgs(url: string, extra: string[]): string[] {
-  const referer = getReferer(url);
-  const cookie  = getCookieFile(url);
-  const ua      = getRandomUserAgent();
-  const proxyArgs = getProxyArgs() || [];
+  const referer    = getReferer(url);
+  const cookie     = getCookieFile(url);
+  const ua         = getRandomUserAgent();
+  const proxyArgs  = getProxyArgs() || [];
 
   const args: string[] = [
     "--no-check-certificate",
@@ -63,8 +90,11 @@ function buildYtDlpArgs(url: string, extra: string[]): string[] {
 async function getCobaltDownloadUrl(
   url: string,
   quality: string = "720"
-): Promise<{ url: string; filename: string; type: string }> {
-  console.log("[Cobalt] Attempting download for:", url);
+): Promise<{ url: string; audioUrl: string | null; filename: string; type: string }> {
+
+  // FIX 1: Always resolve short/redirect URLs before sending to Cobalt
+  const resolvedUrl = await resolveRedirectUrl(url);
+  console.log("[Cobalt] Attempting download for:", resolvedUrl);
 
   const cleanQuality = quality.toString().toLowerCase().replace("p", "");
 
@@ -74,34 +104,53 @@ async function getCobaltDownloadUrl(
       "Content-Type": "application/json",
       "Accept": "application/json",
     },
+    // FIX 2: Added downloadMode and youtubeVideoCodec — required by modern Cobalt
     body: JSON.stringify({
-      url,
+      url: resolvedUrl,
       videoQuality: cleanQuality,
       filenameStyle: "classic",
+      downloadMode: "auto",        // required — tells Cobalt how to pick streams
+      youtubeVideoCodec: "h264",   // prevents VP9/AV1 which mobile apps can't always play
     }),
   });
 
   if (!response.ok) {
     const errorBody = await response.text().catch(() => "No error body");
-    console.error("[Cobalt] Rejected payload:", errorBody);
+    console.error("[Cobalt] Rejected — status:", response.status, "body:", errorBody);
     throw new Error(`Cobalt error: ${response.status}`);
   }
 
   const data = (await response.json()) as any;
+  console.log("[Cobalt] Response status:", data.status);
 
   switch (data.status) {
     case "tunnel":
     case "redirect":
-      return { url: data.url, filename: data.filename ?? "video.mp4", type: data.status };
+      return {
+        url: data.url,
+        audioUrl: null,
+        filename: data.filename ?? "video.mp4",
+        type: data.status,
+      };
 
-    case "picker":
-      return { url: data.picker[0].url, filename: data.filename ?? "video.mp4", type: "picker" };
+    case "picker": {
+      // picker = Cobalt found multiple streams (e.g. video + audio split)
+      // Find the video stream and audio stream separately
+      const videoItem = data.picker?.find((p: any) => p.type === "video") ?? data.picker?.[0];
+      const audioItem = data.picker?.find((p: any) => p.type === "audio") ?? null;
+      return {
+        url: videoItem?.url ?? data.picker[0].url,
+        audioUrl: audioItem?.url ?? null,
+        filename: data.filename ?? "video.mp4",
+        type: "picker",
+      };
+    }
 
     case "error":
-      throw new Error(data.error?.code ?? "Cobalt failed");
+      throw new Error(data.error?.code ?? "Cobalt returned error status");
 
     default:
-      throw new Error("Unknown response from Cobalt");
+      throw new Error(`Unknown Cobalt response status: ${data.status}`);
   }
 }
 
@@ -138,18 +187,29 @@ async function getYtDlpInfo(url: string) {
 // ── yt-dlp Download Fallback ──────────────────────────────────────────────────
 
 async function getYtDlpDownloadUrl(url: string) {
-  const args = buildYtDlpArgs(url, ["-f", "best", "--get-url"]);
+  // FIX 3: Prefer mp4 explicitly so the mobile app can always play it
+  // "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best" covers:
+  //   - single-file mp4 (most platforms)
+  //   - split video+audio mp4/m4a (YouTube)
+  //   - any best stream as last resort
+  const args = buildYtDlpArgs(url, [
+    "-f", "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
+    "--get-url",
+  ]);
 
   const { stdout } = await execFilePromise("yt-dlp", args, {
     timeout: TIMEOUTS.url,
     maxBuffer: 1024 * 256,
   });
 
-  const [videoUrl, audioUrl] = stdout.trim().split("\n").filter(Boolean);
+  const urls = stdout.trim().split("\n").filter(Boolean);
+  const videoUrl = urls[0];
+  // If yt-dlp returned two lines, the second is the audio stream (split track)
+  const audioUrl = urls.length > 1 ? urls[1] : null;
 
   if (!videoUrl) throw new Error("No download URL found via yt-dlp");
 
-  return { videoUrl, audioUrl: audioUrl ?? null };
+  return { videoUrl, audioUrl };
 }
 
 // ── 1. Get Video Info ─────────────────────────────────────────────────────────
@@ -167,10 +227,13 @@ export const getVideoInfo = async (
     return reply.code(400).send({ success: false, message: "Invalid or unsupported URL" });
   }
 
+  // Resolve short URL once — reuse for both Cobalt and yt-dlp
+  const resolvedUrl = await resolveRedirectUrl(url);
+
   // ── Try Cobalt First ────────────────────────────────────────────────────────
   try {
-    const result = await getCobaltDownloadUrl(url, "720");
-    console.log("[Cobalt] Info success for:", url);
+    const result = await getCobaltDownloadUrl(resolvedUrl, "720");
+    console.log("[Cobalt] Info success for:", resolvedUrl);
 
     return reply.code(200).send({
       success: true,
@@ -189,7 +252,7 @@ export const getVideoInfo = async (
 
   // ── Fallback: yt-dlp ────────────────────────────────────────────────────────
   try {
-    const { title, thumbnail, duration, ext } = await getYtDlpInfo(url);
+    const { title, thumbnail, duration, ext } = await getYtDlpInfo(resolvedUrl);
 
     return reply.code(200).send({
       success: true,
@@ -198,7 +261,7 @@ export const getVideoInfo = async (
       data: { title, thumbnail, duration, ext },
     });
   } catch (ytdlpError: any) {
-    req.log.error({ err: ytdlpError, url }, "Both Cobalt and yt-dlp failed for info");
+    req.log.error({ err: ytdlpError, url: resolvedUrl }, "Both Cobalt and yt-dlp failed for info");
     return reply.code(500).send({
       success: false,
       message: "Failed to fetch video info from all sources",
@@ -219,16 +282,23 @@ export const getDownloadLink = async (
     return reply.code(400).send({ success: false, message: "Invalid or missing URL" });
   }
 
+  // Resolve short URL once — reuse for both Cobalt and yt-dlp
+  const resolvedUrl = await resolveRedirectUrl(url);
+
   // ── Try Cobalt First ────────────────────────────────────────────────────────
   try {
-    const result = await getCobaltDownloadUrl(url, String(quality));
-    console.log("[Cobalt] Download success for:", url);
+    const result = await getCobaltDownloadUrl(resolvedUrl, String(quality));
+    console.log("[Cobalt] Download success for:", resolvedUrl);
 
+    // FIX 4: type is now correctly at the TOP LEVEL to match what DownloadPage.tsx reads
+    // (response.data.type) AND also inside data.type for backward compat
     return reply.code(200).send({
       success: true,
       source: "cobalt",
+      type: result.type,       // ← top-level, matches: response.data.type in the app
       data: {
         videoUrl: result.url,
+        audioUrl: result.audioUrl, // ← now properly returned from picker responses
         filename: result.filename,
         type: result.type,
       },
@@ -239,18 +309,20 @@ export const getDownloadLink = async (
 
   // ── Fallback: yt-dlp ────────────────────────────────────────────────────────
   try {
-    const { videoUrl, audioUrl } = await getYtDlpDownloadUrl(url);
+    const { videoUrl, audioUrl } = await getYtDlpDownloadUrl(resolvedUrl);
 
     return reply.code(200).send({
       success: true,
       source: "ytdlp",
+      type: audioUrl ? "split" : "redirect",  // ← also add type here for consistency
       data: {
         videoUrl,
         audioUrl,
+        type: audioUrl ? "split" : "redirect",
       },
     });
   } catch (ytdlpError: any) {
-    req.log.error({ err: ytdlpError, url }, "Both Cobalt and yt-dlp failed for download");
+    req.log.error({ err: ytdlpError, url: resolvedUrl }, "Both Cobalt and yt-dlp failed for download");
     const stderr = ytdlpError?.stderr ?? ytdlpError?.message ?? "";
     return reply.code(500).send({
       success: false,
@@ -260,7 +332,30 @@ export const getDownloadLink = async (
   }
 };
 
+// ── 3. Resolve Short URL (Optional standalone endpoint) ───────────────────────
+// Expose this if your mobile app needs to resolve URLs client-side before calling download.
+// Route: GET /api/v1/resolve-url?url=https://vt.tiktok.com/xxx
+
+export const resolveUrl = async (
+  req: FastifyRequest<{ Querystring: { url: string } }>,
+  reply: FastifyReply,
+) => {
+  const { url } = req.query as { url: string };
+
+  if (!url || typeof url !== "string") {
+    return reply.code(400).send({ success: false, message: "url query param is required" });
+  }
+
+  try {
+    const resolvedUrl = await resolveRedirectUrl(url);
+    return reply.code(200).send({ success: true, resolvedUrl });
+  } catch (err: any) {
+    return reply.code(500).send({ success: false, message: "Failed to resolve URL" });
+  }
+};
+
 export const downloadController = {
   getVideoInfo,
   getDownloadLink,
+  resolveUrl,   // register this route in your router if needed
 };
