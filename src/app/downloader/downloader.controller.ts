@@ -319,9 +319,7 @@ export const getDownloadLink = async (
     console.log("[Cobalt] Download success for:", resolvedUrl);
 
     let finalVideoUrl = result.url;
-    if (result.type === "tunnel") {
-      finalVideoUrl = `${BASE_URL}/tunnel?url=` + encodeURIComponent(result.url);
-    }
+    
 
     // Also proxy audioUrl if present
     const finalAudioUrl = result.audioUrl
@@ -399,75 +397,22 @@ export const resolveUrl = async (
 // ── 4. Tunnel ─────────────────────────────────────────────────────────────────
 // ── 4. Tunnel ─────────────────────────────────────────────────────────────────
 const tunnel = async (
-  req: FastifyRequest<{ Querystring: TunnelQuery }>,
+  req: FastifyRequest,
   reply: FastifyReply,
 ) => {
-  const { url } = req.query;
+  // Forward the entire request to Cobalt internal
+  const cobaltUrl = process.env.COBALT_URL ?? "http://cobalt-api:9000";
+  const queryString = new URLSearchParams(req.query as any).toString();
+  
+  const response = await fetch(`${cobaltUrl}/tunnel?${queryString}`, {
+    signal: AbortSignal.timeout(30000),
+  });
 
-  if (!url) {
-    return reply.code(400).send({ success: false, message: "Missing tunnel URL" });
-  }
-
-  // Parse host first
-  let parsedHost: string;
-  try {
-    parsedHost = new URL(url).hostname;
-  } catch {
-    return reply.code(400).send({ success: false, message: "Invalid URL format" });
-  }
-
-  const isAllowedHost = ALLOWED_TUNNEL_HOSTS.some(h => parsedHost.endsWith(h));
-  if (!isAllowedHost) {
-    console.warn("[Tunnel] Blocked host:", parsedHost);
-    return reply.code(403).send({ success: false, message: "Tunnel host not permitted" });
-  }
-
-  try {
-    // Determine the original referer header to match what the link generator used
-    const referer = url.includes("tiktok") ? "https://www.tiktok.com/" : "https://www.instagram.com/";
-
-    const response = await fetch(url, {
-      signal: AbortSignal.timeout(30000),
-      headers: {
-        // Match the user agent that yt-dlp commonly provides under standard chrome impersonation
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": referer,
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-      },
-    });
-
-    if (!response.ok) {
-      console.error(`[Tunnel] Fetch failed with status ${response.status} for URL: ${url}`);
-      return reply.code(response.status).send({ success: false, message: "Failed to fetch stream from CDN" });
-    }
-
-    const contentLength = response.headers.get("content-length");
-    if (contentLength && parseInt(contentLength) > MAX_TUNNEL_BYTES) {
-      response.body?.cancel();
-      return reply.code(413).send({ success: false, message: "File too large to tunnel" });
-    }
-
-    req.raw.on("close", () => {
-      response.body?.cancel();
-    });
-
-    reply.header("Content-Type", response.headers.get("content-type") || "video/mp4");
-    
-    // Support file range seeking for media players on iOS/Android
-    const contentRange = response.headers.get("content-range");
-    if (contentRange) reply.header("Content-Range", contentRange);
-
-    reply.header("Access-Control-Allow-Origin", "*");
-    return reply.send(response.body);
-
-  } catch (error: any) {
-    console.error("[Tunnel] Error:", error.message);
-    return reply.code(500).send({
-      success: false,
-      message: error.message || "Tunnel failed",
-    });
-  }
+  reply.header("Content-Type", response.headers.get("content-type") || "video/mp4");
+  const contentLength = response.headers.get("content-length");
+  if (contentLength) reply.header("Content-Length", contentLength);
+  
+  return reply.send(response.body);
 };
 export const downloadController = {
   getVideoInfo,
