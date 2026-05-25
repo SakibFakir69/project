@@ -18,24 +18,7 @@ if (!process.env.API_URL) {
   console.warn("[Config] API_URL not set, using default:", BASE_URL);
 }
 
-const MAX_TUNNEL_BYTES = 500 * 1024 * 1024;
-
-const ALLOWED_TUNNEL_HOSTS = [
-  'tiktok.com',           // ✅ matches v19-webapp-prime.us.tiktok.com
-  'tiktokcdn.com',        // ✅ matches v19.tiktokcdn.com
-  'tiktokv.com',
-  'tiktok-cdn.com',
-  'googlevideo.com',
-  'fbcdn.net',
-  'cdninstagram.com',
-  'twimg.com',
-  'video.twimg.com',
-  'redd.it',
-  'redditmedia.com',
-  'reddituploads.com',
-  'youtube.com',
-  'ytimg.com',
-];
+const COBALT_URL = process.env.COBALT_URL ?? "http://cobalt-api:9000";
 
 const execFilePromise = promisify(execFile);
 
@@ -48,15 +31,83 @@ interface DownloadBody  {
   audioFormat?: AudioFormat;
 }
 
+// ── Platform Detection ────────────────────────────────────────────────────────
+type Platform =
+  | "youtube"
+  | "tiktok"
+  | "instagram"
+  | "twitter"
+  | "reddit"
+  | "facebook"
+  | "generic";
+
+function detectPlatform(url: string): Platform {
+  if (/youtube\.com|youtu\.be/i.test(url))    return "youtube";
+  if (/tiktok\.com|vm\.tiktok|vt\.tiktok/i.test(url)) return "tiktok";
+  if (/instagram\.com/i.test(url))            return "instagram";
+  if (/twitter\.com|x\.com/i.test(url))       return "twitter";
+  if (/reddit\.com|redd\.it/i.test(url))      return "reddit";
+  if (/facebook\.com|fb\.watch/i.test(url))   return "facebook";
+  return "generic";
+}
+
 // ── Error Classifier ──────────────────────────────────────────────────────────
-function classifyError(stderr: string): string {
-  if (stderr.includes("429") || stderr.includes("rate limit"))
-    return "Rate limit hit — try again later";
-  if (stderr.includes("private") || stderr.includes("unavailable"))
-    return "Video is private or unavailable";
-  if (stderr.includes("geo"))
-    return "Video is not available in this region";
-  return "Failed to process video URL";
+interface ClassifiedError {
+  message: string;
+  retryable: boolean;
+  statusCode: number;
+}
+
+function classifyError(stderr: string): ClassifiedError {
+  const s = (stderr ?? "").toLowerCase();
+
+  if (s.includes("429") || s.includes("rate limit") || s.includes("too many requests"))
+    return { message: "Rate limit hit — try again in a few minutes", retryable: true, statusCode: 429 };
+
+  if (s.includes("private") || s.includes("members only") || s.includes("login required"))
+    return { message: "Video is private or requires login", retryable: false, statusCode: 403 };
+
+  if (s.includes("unavailable") || s.includes("has been removed") || s.includes("no longer available"))
+    return { message: "Video is unavailable or has been removed", retryable: false, statusCode: 404 };
+
+  if (s.includes("geo") || s.includes("not available in your country"))
+    return { message: "Video is geo-restricted in this region", retryable: false, statusCode: 451 };
+
+  if (s.includes("copyright") || s.includes("blocked"))
+    return { message: "Video is blocked due to copyright", retryable: false, statusCode: 403 };
+
+  if (s.includes("network") || s.includes("connection") || s.includes("timeout"))
+    return { message: "Network error — retrying", retryable: true, statusCode: 503 };
+
+  if (s.includes("nsig") || s.includes("player") || s.includes("cipher"))
+    return { message: "YouTube player error — yt-dlp may need updating", retryable: false, statusCode: 500 };
+
+  return { message: "Failed to process video URL", retryable: false, statusCode: 500 };
+}
+
+// ── Retry Helper ──────────────────────────────────────────────────────────────
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  {
+    retries   = 2,
+    baseDelay = 800,
+    label     = "op",
+  }: { retries?: number; baseDelay?: number; label?: string } = {}
+): Promise<T> {
+  let lastErr: any;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastErr = err;
+      const classified = classifyError(err?.stderr ?? err?.message ?? "");
+      if (!classified.retryable || attempt === retries) break;
+      const delay = baseDelay * 2 ** attempt;
+      console.warn(`[${label}] attempt ${attempt + 1} failed, retrying in ${delay}ms:`, err?.message);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw lastErr;
 }
 
 // ── Short URL Resolver ────────────────────────────────────────────────────────
@@ -75,6 +126,7 @@ async function resolveRedirectUrl(url: string): Promise<string> {
 
     let resolved = res.url && res.url !== "" ? res.url : url;
 
+    // Strip TikTok tracking params
     if (resolved.includes("tiktok.com") && resolved.includes("?")) {
       resolved = resolved.split("?")[0];
     }
@@ -88,23 +140,54 @@ async function resolveRedirectUrl(url: string): Promise<string> {
 }
 
 // ── yt-dlp Args Builder ───────────────────────────────────────────────────────
-// ── yt-dlp Args Builder ───────────────────────────────────────────────────────
 function buildYtDlpArgs(url: string, extra: string[]): string[] {
+  const platform  = detectPlatform(url);
   const referer   = getReferer(url);
   const cookie    = getCookieFile(url);
-  // Remove or comment out: const ua = getRandomUserAgent();
   const proxyArgs = getProxyArgs() || [];
+
+  const platformArgs: string[] = [];
+
+  switch (platform) {
+    case "tiktok":
+      // TikTok needs extractor-args to avoid watermark when possible
+      platformArgs.push(
+        "--extractor-args", "tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com",
+        "--add-header", "Accept-Encoding:identity",
+      );
+      break;
+
+    case "instagram":
+      // Instagram benefits from more generous timeouts
+      platformArgs.push("--socket-timeout", "30");
+      break;
+
+    case "youtube":
+      // PO Token workaround: use web_creator client as fallback
+      platformArgs.push(
+        "--extractor-args", "youtube:player_client=web_creator,web",
+        "--extractor-args", "youtube:skip=dash",
+      );
+      break;
+
+    case "twitter":
+      platformArgs.push("--add-header", "Accept-Language:en-US,en;q=0.9");
+      break;
+
+    default:
+      break;
+  }
 
   const args: string[] = [
     "--no-check-certificate",
     "--no-playlist",
-    "--socket-timeout", String(TIMEOUTS.socket),
-    
-    
-    "--impersonate", "chrome", 
-    
+    "--socket-timeout", String(TIMEOUTS.socket ?? 30),
+    "--retries", "3",
+    "--fragment-retries", "3",
+    "--impersonate", "chrome",
     ...proxyArgs,
     ...(referer ? ["--add-header", `Referer: ${referer}`] : []),
+    ...platformArgs,
     ...extra,
     url,
   ];
@@ -114,22 +197,25 @@ function buildYtDlpArgs(url: string, extra: string[]): string[] {
 }
 
 // ── Cobalt Service ────────────────────────────────────────────────────────────
+interface CobaltResult {
+  url: string;
+  audioUrl: string | null;
+  filename: string;
+  type: string;
+}
+
 async function getCobaltDownloadUrl(
   resolvedUrl: string,
-  quality: string = "720"
-): Promise<{ url: string; audioUrl: string | null; filename: string; type: string }> {
-
+  quality = "720"
+): Promise<CobaltResult> {
   console.log("[Cobalt] Attempting download for:", resolvedUrl);
 
-  // Normalize quality — "best" or non-numeric → "720"
-  const validQualities = ["144","240","360","480","720","1080","1440","2160"];
-  const cleanQuality = validQualities.includes(quality.replace("p",""))
-    ? quality.replace("p","")
+  const validQualities = ["144", "240", "360", "480", "720", "1080", "1440", "2160"];
+  const cleanQuality = validQualities.includes(quality.replace("p", ""))
+    ? quality.replace("p", "")
     : "720";
 
-  const cobaltUrl = process.env.COBALT_URL ?? "http://cobalt-api:9000";
-
-  const response = await fetch(`${cobaltUrl}/`, {
+  const response = await fetch(`${COBALT_URL}/`, {
     method: "POST",
     signal: AbortSignal.timeout(15000),
     headers: {
@@ -183,6 +269,16 @@ async function getCobaltDownloadUrl(
   }
 }
 
+// ── yt-dlp: Format Strategies (ordered best → most compatible) ────────────────
+const FORMAT_STRATEGIES = [
+  // Strategy 1: Best MP4 with separate audio (highest quality)
+  "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]",
+  // Strategy 2: Any best combined stream
+  "best[ext=mp4]/best[ext=webm]/best",
+  // Strategy 3: Absolute fallback — whatever yt-dlp can get
+  "bestvideo+bestaudio/best",
+];
+
 // ── yt-dlp Info ───────────────────────────────────────────────────────────────
 async function getYtDlpInfo(url: string) {
   const args = buildYtDlpArgs(url, [
@@ -195,7 +291,7 @@ async function getYtDlpInfo(url: string) {
   ]);
 
   const { stdout } = await execFilePromise("yt-dlp", args, {
-    timeout:    TIMEOUTS.info,
+    timeout:   TIMEOUTS.info ?? 60_000,
     killSignal: "SIGKILL",
     maxBuffer:  1024 * 512,
   });
@@ -212,15 +308,19 @@ async function getYtDlpInfo(url: string) {
   return { title, thumbnail, duration, ext };
 }
 
-// ── yt-dlp Download ───────────────────────────────────────────────────────────
-async function getYtDlpDownloadUrl(url: string) {
-  const args = buildYtDlpArgs(url, [
-    "-f", "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
-    "--get-url",
-  ]);
+// ── yt-dlp Download (with multi-format fallback) ──────────────────────────────
+async function getYtDlpDownloadUrl(
+  url: string,
+  strategyIndex = 0
+): Promise<{ videoUrl: string; audioUrl: string | null; strategyUsed: number }> {
+  const format = FORMAT_STRATEGIES[strategyIndex] ?? FORMAT_STRATEGIES[FORMAT_STRATEGIES.length - 1];
+
+  console.log(`[yt-dlp] Trying format strategy ${strategyIndex}: ${format.slice(0, 60)}…`);
+
+  const args = buildYtDlpArgs(url, ["-f", format, "--get-url"]);
 
   const { stdout } = await execFilePromise("yt-dlp", args, {
-    timeout:    TIMEOUTS.url,
+    timeout:   TIMEOUTS.url ?? 60_000,
     killSignal: "SIGKILL",
     maxBuffer:  1024 * 256,
   });
@@ -229,14 +329,38 @@ async function getYtDlpDownloadUrl(url: string) {
   const videoUrl = urls[0];
   const audioUrl = urls.length > 1 ? urls[1] : null;
 
-  if (!videoUrl) throw new Error("No download URL found via yt-dlp");
-  return { videoUrl, audioUrl };
+  if (!videoUrl) throw new Error("No download URL returned by yt-dlp");
+  return { videoUrl, audioUrl, strategyUsed: strategyIndex };
+}
+
+// ── yt-dlp Download with cascading format fallback ───────────────────────────
+async function getYtDlpDownloadUrlWithFallback(
+  url: string
+): Promise<{ videoUrl: string; audioUrl: string | null; strategyUsed: number }> {
+  let lastErr: any;
+
+  for (let i = 0; i < FORMAT_STRATEGIES.length; i++) {
+    try {
+      return await getYtDlpDownloadUrl(url, i);
+    } catch (err: any) {
+      lastErr = err;
+      const classified = classifyError(err?.stderr ?? err?.message ?? "");
+      // Don't retry non-retryable errors (private, geo-blocked, removed)
+      if (!classified.retryable && classified.statusCode !== 500) {
+        console.warn(`[yt-dlp] Non-retryable error on strategy ${i}, stopping:`, err?.message);
+        break;
+      }
+      console.warn(`[yt-dlp] Strategy ${i} failed, trying next format:`, err?.message?.slice(0, 100));
+    }
+  }
+
+  throw lastErr;
 }
 
 // ── 1. Get Video Info ─────────────────────────────────────────────────────────
 export const getVideoInfo = async (
   req: FastifyRequest<{ Body: VideoInfoBody }>,
-  reply: FastifyReply,
+  reply: FastifyReply
 ) => {
   const { url } = req.body;
 
@@ -244,7 +368,6 @@ export const getVideoInfo = async (
     return reply.code(400).send({ success: false, message: "URL is required" });
   }
 
-  // ✅ Resolve FIRST then safety check on resolved URL
   const resolvedUrl = await resolveRedirectUrl(url);
 
   if (!isUrlSafe(resolvedUrl)) {
@@ -252,45 +375,53 @@ export const getVideoInfo = async (
     return reply.code(400).send({ success: false, message: "Invalid or unsupported URL" });
   }
 
-  try {
-    const result = await getCobaltDownloadUrl(resolvedUrl, "720");
-    return reply.code(200).send({
-      success: true,
-      source:  "cobalt",
-      message: "Fetch video info successful (via Cobalt)",
+  // Try Cobalt and yt-dlp in parallel for speed; use whichever succeeds first
+  const cobaltPromise = getCobaltDownloadUrl(resolvedUrl, "720")
+    .then((r) => ({
+      source: "cobalt" as const,
       data: {
-        title:     result.filename.replace(/\.[^/.]+$/, ""),
+        title:     r.filename.replace(/\.[^/.]+$/, ""),
         thumbnail: null,
         duration:  0,
-        ext:       result.filename.split(".").pop() ?? "mp4",
+        ext:       r.filename.split(".").pop() ?? "mp4",
       },
+    }))
+    .catch((e) => {
+      console.warn("[Cobalt] Info parallel attempt failed:", e.message);
+      return null;
     });
-  } catch (cobaltError: any) {
-    console.warn("[Cobalt] Info failed, falling back to yt-dlp:", cobaltError.message);
-  }
 
-  try {
-    const { title, thumbnail, duration, ext } = await getYtDlpInfo(resolvedUrl);
+  const ytdlpPromise = getYtDlpInfo(resolvedUrl)
+    .then((d) => ({ source: "ytdlp" as const, data: d }))
+    .catch((e) => {
+      console.warn("[yt-dlp] Info parallel attempt failed:", e.message);
+      return null;
+    });
+
+  // Race: prefer Cobalt but accept yt-dlp if it resolves first
+  const [cobaltResult, ytdlpResult] = await Promise.all([cobaltPromise, ytdlpPromise]);
+
+  const winner = ytdlpResult ?? cobaltResult; // yt-dlp has richer metadata
+
+  if (winner) {
     return reply.code(200).send({
       success: true,
-      source:  "ytdlp",
-      message: "Fetch video info successful (via yt-dlp)",
-      data: { title, thumbnail, duration, ext },
-    });
-  } catch (ytdlpError: any) {
-    req.log.error({ err: ytdlpError, url: resolvedUrl }, "Both Cobalt and yt-dlp failed for info");
-    return reply.code(500).send({
-      success: false,
-      message: "Failed to fetch video info from all sources",
-      ...(process.env.NODE_ENV === "development" && { error: ytdlpError?.message }),
+      source:  winner.source,
+      message: "Fetch video info successful",
+      data:    winner.data,
     });
   }
+
+  return reply.code(500).send({
+    success: false,
+    message: "Failed to fetch video info from all sources",
+  });
 };
 
 // ── 2. Get Download Link ──────────────────────────────────────────────────────
 export const getDownloadLink = async (
   req: FastifyRequest<{ Body: DownloadBody }>,
-  reply: FastifyReply,
+  reply: FastifyReply
 ) => {
   const { url, quality = "720" } = req.body;
 
@@ -298,30 +429,29 @@ export const getDownloadLink = async (
     return reply.code(400).send({ success: false, message: "Invalid or missing URL" });
   }
 
-  // ✅ Resolve FIRST — short URLs like vt.tiktok.com expand to tiktok.com
   const resolvedUrl = await resolveRedirectUrl(url);
 
-  // ✅ Safety check on RESOLVED url, not the original short url
   if (!isUrlSafe(resolvedUrl)) {
     console.warn("[Download] Unsafe URL rejected:", resolvedUrl);
     return reply.code(400).send({ success: false, message: "Invalid or missing URL" });
   }
 
-  // Normalize quality — strip "p", fallback to "720"
-  const validQualities = ["144","240","360","480","720","1080","1440","2160"];
-  const normalizedQuality = validQualities.includes(String(quality).replace("p",""))
-    ? String(quality).replace("p","")
+  const validQualities = ["144", "240", "360", "480", "720", "1080", "1440", "2160"];
+  const normalizedQuality = validQualities.includes(String(quality).replace("p", ""))
+    ? String(quality).replace("p", "")
     : "720";
 
-  // ── Try Cobalt ────────────────────────────────────────────────────────────
+  const platform = detectPlatform(resolvedUrl);
+  console.log(`[Download] Platform detected: ${platform} for ${resolvedUrl}`);
+
+  // ── Tier 1: Cobalt ────────────────────────────────────────────────────────
   try {
-    const result = await getCobaltDownloadUrl(resolvedUrl, normalizedQuality);
-    console.log("[Cobalt] Download success for:", resolvedUrl);
+    const result = await withRetry(
+      () => getCobaltDownloadUrl(resolvedUrl, normalizedQuality),
+      { retries: 1, baseDelay: 500, label: "Cobalt" }
+    );
+    console.log("[Cobalt] ✅ Download success for:", resolvedUrl);
 
-    let finalVideoUrl = result.url;
-    
-
-    // Also proxy audioUrl if present
     const finalAudioUrl = result.audioUrl
       ? `${BASE_URL}/tunnel?url=` + encodeURIComponent(result.audioUrl)
       : null;
@@ -331,19 +461,24 @@ export const getDownloadLink = async (
       source:  "cobalt",
       type:    result.type,
       data: {
-        videoUrl: finalVideoUrl,
+        videoUrl: result.url,
         audioUrl: finalAudioUrl,
         filename: result.filename,
         type:     result.type,
       },
     });
   } catch (cobaltError: any) {
-    console.warn("[Cobalt] Download failed, falling back to yt-dlp:", cobaltError.message);
+    console.warn("[Cobalt] ❌ All attempts failed:", cobaltError.message?.slice(0, 120));
   }
 
-  // ── Fallback: yt-dlp ──────────────────────────────────────────────────────
+  // ── Tier 2 & 3: yt-dlp with cascading format strategies ──────────────────
   try {
-    const { videoUrl, audioUrl } = await getYtDlpDownloadUrl(resolvedUrl);
+    const { videoUrl, audioUrl, strategyUsed } = await withRetry(
+      () => getYtDlpDownloadUrlWithFallback(resolvedUrl),
+      { retries: 1, baseDelay: 1000, label: "yt-dlp" }
+    );
+
+    console.log(`[yt-dlp] ✅ Download success (strategy ${strategyUsed}) for:`, resolvedUrl);
 
     const finalVideoUrl = `${BASE_URL}/tunnel?url=` + encodeURIComponent(videoUrl);
     const finalAudioUrl = audioUrl
@@ -358,14 +493,19 @@ export const getDownloadLink = async (
         videoUrl: finalVideoUrl,
         audioUrl: finalAudioUrl,
         type:     audioUrl ? "split" : "tunnel",
+        strategyUsed,
       },
     });
   } catch (ytdlpError: any) {
-    req.log.error({ err: ytdlpError, url: resolvedUrl }, "Both Cobalt and yt-dlp failed");
-    const stderr = ytdlpError?.stderr ?? ytdlpError?.message ?? "";
-    return reply.code(500).send({
+    req.log.error({ err: ytdlpError, url: resolvedUrl }, "All download sources exhausted");
+
+    const stderr     = ytdlpError?.stderr ?? ytdlpError?.message ?? "";
+    const classified = classifyError(stderr);
+
+    return reply.code(classified.statusCode).send({
       success: false,
-      message: classifyError(stderr),
+      message: classified.message,
+      platform,
       ...(process.env.NODE_ENV === "development" && { error: ytdlpError?.message }),
     });
   }
@@ -374,7 +514,7 @@ export const getDownloadLink = async (
 // ── 3. Resolve URL ────────────────────────────────────────────────────────────
 export const resolveUrl = async (
   req: FastifyRequest<{ Querystring: { url: string } }>,
-  reply: FastifyReply,
+  reply: FastifyReply
 ) => {
   const { url } = req.query as { url: string };
 
@@ -382,38 +522,36 @@ export const resolveUrl = async (
     return reply.code(400).send({ success: false, message: "url query param is required" });
   }
 
-  // ✅ Resolve first, then check safety on resolved URL
   try {
     const resolvedUrl = await resolveRedirectUrl(url);
     if (!isUrlSafe(resolvedUrl)) {
       return reply.code(400).send({ success: false, message: "Invalid or unsupported URL" });
     }
-    return reply.code(200).send({ success: true, resolvedUrl });
+    return reply.code(200).send({
+      success: true,
+      resolvedUrl,
+      platform: detectPlatform(resolvedUrl),
+    });
   } catch (err: any) {
     return reply.code(500).send({ success: false, message: "Failed to resolve URL" });
   }
 };
 
 // ── 4. Tunnel ─────────────────────────────────────────────────────────────────
-// ── 4. Tunnel ─────────────────────────────────────────────────────────────────
-const tunnel = async (
-  req: FastifyRequest,
-  reply: FastifyReply,
-) => {
-  // Forward the entire request to Cobalt internal
-  const cobaltUrl = process.env.COBALT_URL ?? "http://cobalt-api:9000";
+const tunnel = async (req: FastifyRequest, reply: FastifyReply) => {
   const queryString = new URLSearchParams(req.query as any).toString();
-  
-  const response = await fetch(`${cobaltUrl}/tunnel?${queryString}`, {
+
+  const response = await fetch(`${COBALT_URL}/tunnel?${queryString}`, {
     signal: AbortSignal.timeout(30000),
   });
 
   reply.header("Content-Type", response.headers.get("content-type") || "video/mp4");
   const contentLength = response.headers.get("content-length");
   if (contentLength) reply.header("Content-Length", contentLength);
-  
+
   return reply.send(response.body);
 };
+
 export const downloadController = {
   getVideoInfo,
   getDownloadLink,
