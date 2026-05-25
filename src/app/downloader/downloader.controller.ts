@@ -13,7 +13,7 @@ import { getProxyArgs } from "../../utils/proxy.utils.js";
 import type { VideoQuality, DownloadType, AudioFormat } from "../../types/index.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
-const BASE_URL = process.env.API_URL ?? "https://downtubebest.duckdns.org";
+const BASE_URL = process.env.API_URL ?? "https://downtubebest.duckdns.org/api/v1";
 if (!process.env.API_URL) {
   console.warn("[Config] API_URL not set, using default:", BASE_URL);
 }
