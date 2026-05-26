@@ -1,45 +1,45 @@
-FROM node:20
-
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    python3 \
-    python3-pip \
-    curl \
-    wget \
-    unzip \
-    ca-certificates \
-    libnss3 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libdrm2 \
-    libxkbcommon0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxrandr2 \
-    libgbm1 \
-    libasound2 \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN pip3 install --break-system-packages -U \
-    yt-dlp \
-    curl-cffi \
-    brotli \
-    certifi
+# ── Build stage ───────────────────────────────────────────────────────────────
+FROM node:20-slim AS builder
 
 WORKDIR /app
-
 COPY package*.json ./
-
-RUN npm install
-
+RUN npm ci --omit=dev
 COPY . .
+RUN npm run build     # tsc → dist/
 
-RUN npm run build
+# ── Runtime stage ─────────────────────────────────────────────────────────────
+FROM node:20-slim AS runtime
 
-RUN npm prune --production
+# System deps: Python3 (for yt-dlp/gallery-dl), ffmpeg (muxing), curl (healthcheck)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
+        ffmpeg \
+        curl \
+        wget \
+        ca-certificates \
+    && pip3 install --break-system-packages --no-cache-dir \
+        yt-dlp \
+        gallery-dl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Keep extractors fresh: update yt-dlp + gallery-dl at container start
+# (avoids needing a full image rebuild just for extractor updates)
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+WORKDIR /app
+COPY --from=builder /app/dist        ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./
+
+# Non-root user for security
+RUN groupadd --gid 1001 nodeapp \
+ && useradd  --uid 1001 --gid nodeapp --shell /bin/bash --create-home nodeapp \
+ && chown -R nodeapp:nodeapp /app
+USER nodeapp
 
 EXPOSE 5000
 
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node", "dist/server.js"]

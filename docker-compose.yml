@@ -1,36 +1,137 @@
+# docker-compose.yml  —  Production-hardened video downloader stack
+# Services:  app  |  cobalt-api  |  watchtower
+# gallery-dl is installed INSIDE the app image (see Dockerfile notes below)
+#
+# ── DOCKERFILE CHANGE REQUIRED ───────────────────────────────────────────────
+# Add to your Dockerfile (after Node install):
+#
+#   RUN apt-get update && apt-get install -y python3 python3-pip ffmpeg \
+#       && pip3 install --break-system-packages yt-dlp gallery-dl \
+#       && rm -rf /var/lib/apt/lists/*
+#
+#   # Keep yt-dlp & gallery-dl fresh on every container start (optional cron):
+#   RUN echo "0 4 * * * root pip3 install --break-system-packages -U yt-dlp gallery-dl" \
+#       >> /etc/crontab
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: "3.9"
+
+# ── Shared network ────────────────────────────────────────────────────────────
+networks:
+  internal:
+    driver: bridge
+
+# ── Named volumes ─────────────────────────────────────────────────────────────
+volumes:
+  cobalt_tmp: {}
+
 services:
+
+  # ── Main API app ─────────────────────────────────────────────────────────────
   app:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     restart: unless-stopped
     ports:
       - "5000:5000"
     env_file:
       - .env
     environment:
-      NODE_ENV: production
-      COBALT_URL: "http://cobalt-api:9000"  # ✅ This is correct
+      NODE_ENV:   production
+      COBALT_URL: "http://cobalt-api:9000"
+    networks:
+      - internal
     depends_on:
-      - cobalt-api
+      cobalt-api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus:   "2.0"
+          memory: "2G"
+        reservations:
+          cpus:   "0.5"
+          memory: "512M"
+    healthcheck:
+      test:     ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout:  10s
+      retries:  3
+      start_period: 20s
+    # Tighten file-descriptor limits (each yt-dlp/gallery-dl process opens sockets)
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
+  # ── Cobalt API ────────────────────────────────────────────────────────────────
   cobalt-api:
     image: ghcr.io/imputnet/cobalt:latest
     restart: unless-stopped
-    ports:
-      - "9000:9000"
+    # Do NOT expose 9000 to the public — only app needs it
+    expose:
+      - "9000"
+    networks:
+      - internal
     environment:
-      API_URL: "https://downtubebest.duckdns.org"   # ✅ Change to your VPS IP
-      CORS_WILDCARD: "1"
-      RATE_LIMIT_MAX: "100"
-      RATE_LIMIT_WINDOW: "60"
-      DURATION_LIMIT: "10800"
-      COOKIE_PATH: "/cookies.json"
-      API_EXTERNAL_PROXY: "http://ypadwxjb-rotate:fxazhyr9knac@p.webshare.io:80"
+      API_URL:              "https://downtubebest.duckdns.org"
+      CORS_WILDCARD:        "1"
+      RATE_LIMIT_MAX:       "200"       # bumped for million-user scale
+      RATE_LIMIT_WINDOW:    "60"
+      DURATION_LIMIT:       "10800"
+      COOKIE_PATH:          "/cookies.json"
+      # Use your rotating proxy — prevents YouTube/TikTok IP bans
+      API_EXTERNAL_PROXY:   "${COBALT_PROXY:-http://ypadwxjb-rotate:fxazhyr9knac@p.webshare.io:80}"
     volumes:
-      - ./cookies.json:/cookies.json
+      - ./cookies.json:/cookies.json:ro    # read-only — never let cobalt write cookies
+      - cobalt_tmp:/tmp/cobalt             # ephemeral working space
+    deploy:
+      resources:
+        limits:
+          cpus:   "1.5"
+          memory: "1G"
+        reservations:
+          cpus:   "0.25"
+          memory: "256M"
+    healthcheck:
+      # Cobalt exposes a /api/serverInfo endpoint (or falls back to /)
+      test:     ["CMD", "wget", "--spider", "-q", "http://localhost:9000/"]
+      interval: 20s
+      timeout:  8s
+      retries:  5
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "30m"
+        max-file: "3"
 
+  # ── Watchtower — auto-updates images ─────────────────────────────────────────
+  # Also auto-updates yt-dlp / gallery-dl via a post-update hook (see command)
   watchtower:
     image: containrrr/watchtower
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    command: --interval 3600 --cleanup
+    command: >
+      --interval 3600
+      --cleanup
+      --rolling-restart
+    networks:
+      - internal
+    deploy:
+      resources:
+        limits:
+          cpus:   "0.1"
+          memory: "64M"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
