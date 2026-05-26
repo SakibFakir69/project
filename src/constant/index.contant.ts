@@ -76,10 +76,11 @@ export const COOKIE_FILES: Partial<Record<string, string>> = {
 
 
 export const TIMEOUTS = {
-  info:     20_000,   // getVideoInfo — just metadata
-  url:      20_000,   // getDownloadLink — just URL extraction
-  stream:   90_000,   // streaming — full video
-  socket:   15,       // yt-dlp --socket-timeout (seconds)
+  info:   20000,
+  url:    20000,
+  stream: 90000,
+  socket: 15,
+    gallerydl: 45000,
 } as const;
 
 
