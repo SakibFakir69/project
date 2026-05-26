@@ -473,7 +473,6 @@ async function getYtDlpDownloadData(url: string, strategyIndex = 0): Promise<YtD
     videoUrl = meta.url ?? null;
     audioUrl = null;
   }
-
   if (!videoUrl) throw new Error("yt-dlp: no video URL in JSON output");
 
   cbSuccess("ytdlp");
@@ -516,7 +515,6 @@ async function getYtDlpInfo(url: string) {
     ext:       meta.ext       ?? "mp4",
   };
 }
-
 /** Cascades through FORMAT_STRATEGIES before giving up */
 async function getYtDlpWithFallback(url: string): Promise<YtDlpResult> {
   let lastErr: any;
