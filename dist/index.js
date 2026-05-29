@@ -5,10 +5,9 @@ import { downloadRoutes } from "./app/downloader/downloader.route.js";
 import cors from '@fastify/cors';
 import { fastifyRateLimitMiddleware } from "./middleware/index.js";
 import { initCookies } from "./utils/cookies.js";
+import { downloadController } from "./app/downloader/downloader.controller.js";
 initCookies();
-const app = fastify({
-    logger: true
-});
+const app = fastify({ logger: true });
 await fastifyRateLimitMiddleware(app);
 app.addHook("onRequest", (req, reply, done) => {
     console.log(req.method);
@@ -21,12 +20,13 @@ app.register(cors, {
 app.get("/", async (req, reply) => {
     return { message: "Hello World", time: process.uptime() };
 });
-// ROUTES
+// ✅ Tunnel registered WITHOUT /api/v1 prefix
+// Cobalt generates URLs like: https://yourdomain.com/tunnel?id=xxx
+app.get('/tunnel', downloadController.tunnel);
+// Routes WITH /api/v1 prefix
 app.register(downloadRoutes, { prefix: '/api/v1' });
-// HEALTH CHECK
 app.get('/home', (request, reply) => {
-    return { message: "Welome to authservices" };
+    return { message: "Welcome to authservices" };
 });
-// EXPORT APP
 export const MainServer = app;
 //# sourceMappingURL=index.js.map

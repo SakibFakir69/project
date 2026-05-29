@@ -64,10 +64,11 @@ export const COOKIE_FILES = {
     "vm.tiktok.com": `${COOKIES_DIR}/tiktok.txt`,
 };
 export const TIMEOUTS = {
-    info: 20_000, // getVideoInfo — just metadata
-    url: 20_000, // getDownloadLink — just URL extraction
-    stream: 90_000, // streaming — full video
-    socket: 15, // yt-dlp --socket-timeout (seconds)
+    info: 20000,
+    url: 20000,
+    stream: 90000,
+    socket: 15,
+    gallerydl: 45000,
 };
 export const FORMATS = {
     // Single stream — fast, good for short reels/TikTok
