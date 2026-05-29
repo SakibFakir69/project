@@ -3,23 +3,20 @@ FROM node:20-slim AS builder
 
 WORKDIR /app
 COPY package*.json ./
-
-# 1. Install ALL dependencies (including devDependencies) so tsc can compile
 RUN npm ci
-
 COPY . .
 RUN npm run build     # tsc → dist/
 
-# 2. Prune devDependencies after build so they don't bloat the runtime image
+# Remove devDependencies to keep runtime image small
 RUN npm prune --omit=dev
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM node:20-slim AS runtime
 
-# 3. Install Playwright system dependencies FIRST (required for Chromium to run)
+# 1. Install Playwright system dependencies and Chromium browser
 RUN npx playwright install --with-deps chromium
 
-# System deps: Python3 (for yt-dlp/gallery-dl), ffmpeg (muxing), curl (healthcheck)
+# 2. System deps: Python3 (for yt-dlp/gallery-dl), ffmpeg (muxing), curl (healthcheck)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
@@ -37,21 +34,16 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 WORKDIR /app
-
-# Copy built application and pruned node_modules from builder
 COPY --from=builder /app/dist        ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
 
-# 4. Fix Playwright permissions for non-root user
-# Playwright installs Chromium for root by default. We must move it to a place the 'nodeapp' user can access.
+# Non-root user for security & Playwright permissions
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
-RUN mkdir -p /opt/playwright && chown -R nodeapp:nodeapp /opt/playwright
-
-# Non-root user for security
-RUN groupadd --gid 1001 nodeapp \
+RUN mkdir -p /opt/playwright \
+ && groupadd --gid 1001 nodeapp \
  && useradd  --uid 1001 --gid nodeapp --shell /bin/bash --create-home nodeapp \
- && chown -R nodeapp:nodeapp /app
+ && chown -R nodeapp:nodeapp /app /opt/playwright
 USER nodeapp
 
 EXPOSE 5000
