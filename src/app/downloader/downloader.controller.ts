@@ -990,7 +990,6 @@ export const healthCheck = async (_req: FastifyRequest, reply: FastifyReply) => 
         const { stdout } = await execFilePromise("which", ["yt-dlp"], { encoding: "utf8" });
     ytdlpAgeDays = parseFloat(((Date.now() - statSync((stdout as string).trim()).mtimeMs) / 86_400_000).toFixed(1));
   } catch { /* yt-dlp not found */ }
-
   return reply.code(200).send({
     status:  "ok",
     version: "v5",
