@@ -457,13 +457,14 @@ async function resolveRedirectUrl(url: string): Promise<string> {
 // This is why mutation-based retry succeeds where identical retry fails.
 
 function buildAttemptContext(
-  url: string,
-  platform: Platform,
+  url:          string,
+  platform:     Platform,
   attemptIndex: number,
-  signal?: AbortSignal,
+  signal?:      AbortSignal,
 ): AttemptContext {
-  const proxy = proxyPool.pickByIndex(attemptIndex);
-  const cookie = cookieManager.byIndex(platform as any, attemptIndex);
+  // FIX: Pass platform to pickByIndex so it skips proxies temporarily banned for this platform
+  const proxy    = proxyPool.pickByIndex(attemptIndex, platform); 
+  const cookie   = cookieManager.byIndex(platform as any, attemptIndex);
   const identity = identityManager.forAttempt(attemptIndex);
 
   return { attemptIndex, proxy: proxy?.url ?? null, cookiePath: cookie, identity, signal };
@@ -802,6 +803,11 @@ export const getVideoInfo = async (
   return reply.code(500).send({ success: false, message: "Failed to fetch video info" });
 };
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2. GET DOWNLOAD LINK  (4-tier fallback + mutation retry)
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. GET DOWNLOAD LINK  (4-tier fallback + mutation retry)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -810,116 +816,200 @@ export const getDownloadLink = async (
   req: FastifyRequest<{ Body: DownloadBody }>,
   reply: FastifyReply,
 ) => {
-  const { url, quality = "720" } = req.body;
-  if (!url || typeof url !== "string")
-    return reply.code(400).send({ success: false, message: "Invalid or missing URL" });
+  const { url, type = "video", quality = "720p", audioFormat = "mp3" } = req.body;
+
+  if (!url || typeof url !== "string") {
+    return reply.code(400).send({ success: false, message: "URL is required" });
+  }
 
   const resolvedUrl = await resolveRedirectUrl(url.trim());
-  if (!isUrlSafe(resolvedUrl))
+  if (!isUrlSafe(resolvedUrl)) {
     return reply.code(400).send({ success: false, message: "Invalid or unsupported URL" });
+  }
 
-  const validQ = ["144", "240", "360", "480", "720", "1080", "1440", "2160"];
-  const normalizedQuality = validQ.includes(String(quality).replace("p", "")) ? String(quality).replace("p", "") : "720";
   const platform = detectPlatform(resolvedUrl);
-  const adapter = getAdapter(platform);
-  const cacheKey = `dl:${resolvedUrl}:${normalizedQuality}`;
+  const cacheKey = `download:${platform}:${type}:${quality}:${audioFormat}:${resolvedUrl}`;
 
+  // 1. Check Cache Layer
   const cached = await cache.get(cacheKey);
   if (cached) {
     log("debug", "download", "Cache HIT", { url: resolvedUrl.slice(0, 80) });
-    return reply.code(200).send(cached);
+    return reply.code(200).send({
+      success: true,
+      source: "cache",
+      message: "Download link generated successfully",
+      data: cached,
+    });
   }
 
-  if (procSemaphore.queueDepth >= MAX_QUEUE_DEPTH)
-    return reply.code(503).send({ success: false, message: "Server is busy. Please try again.", queueDepth: procSemaphore.queueDepth });
+  // 2. Manage Abort Signal States & Prevent Ghost Pipeline Cancellation
+  const clientDisconnectController = new AbortController();
+  let responseFinished = false;
 
-  // Wire abort to client disconnect
-  const ac = new AbortController();
-  req.raw.on("close", () => { if (!reply.sent) ac.abort(); });
-  const signal = ac.signal;
+  req.raw.on("close", () => {
+    if (responseFinished) return; // Ignore if data completely flushed out to client
+    log("info", "download", "Client dropped socket prematurely, aborting processing streams");
+    clientDisconnectController.abort();
+  });
 
-  log("info", "download", "Processing", { platform, quality: normalizedQuality, url: resolvedUrl.slice(0, 80) });
+  // 3. Process Execution Thread via Shared Request Coalescing Pipeline
+  try {
+    const finalResult = await dedupe(cacheKey, async () => {
+      let payload: any = null;
+      let usedTier = "unknown";
 
-  const execute = async () => {
-    // ── TIER 1: Cobalt ────────────────────────────────────────────────────────
-    if (adapter.useCobalt && !cbIsOpen("cobalt") && cobaltReachable) {
-      try {
-        const r = await getCobaltDownloadUrl(resolvedUrl, normalizedQuality, signal); // FIX 2: Pass signal
-        log("info", "cobalt", "Success");
-        const vSafe = safeTunnelUrl(r.url);
-        const aSafe = r.audioUrl ? safeTunnelUrl(r.audioUrl) : { url: null, tunnelAllowed: true };
-        return {
-          success: true, source: "cobalt", type: r.type,
-          data: { videoUrl: vSafe.url, audioUrl: aSafe.url, tunnelAllowed: vSafe.tunnelAllowed, filename: r.filename, type: r.type }
-        };
-      } catch (e: any) { log("warn", "cobalt", "Failed", { error: e.message?.slice(0, 100) }); }
-    }
-
-    // ── TIER 2: yt-dlp with mutation retry ───────────────────────────────────
-    if (!cbIsOpen("ytdlp")) {
-      try {
-        const r = await getYtDlpWithMutation(resolvedUrl, platform, normalizedQuality, signal);
-        const vSafe = safeTunnelUrl(r.videoUrl);
-        const aSafe = r.audioUrl ? safeTunnelUrl(r.audioUrl) : { url: null, tunnelAllowed: true };
-        return {
-          success: true, source: "ytdlp", type: r.audioUrl ? "split" : "tunnel",
-          data: {
-            videoUrl: vSafe.url, audioUrl: aSafe.url, tunnelAllowed: vSafe.tunnelAllowed,
-            type: r.audioUrl ? "split" : "tunnel", strategyUsed: r.strategyUsed, title: r.title, thumbnail: r.thumbnail
-          }
-        };
-      } catch (e: any) { log("warn", "ytdlp", "All attempts failed", { error: e.message?.slice(0, 100) }); }
-    }
-
-    // ── TIER 3: gallery-dl ───────────────────────────────────────────────────
-    if (adapter.useGalleryDl && !cbIsOpen("gallerydl")) {
-      try {
-        const r = await getGalleryDlDownloadUrl(resolvedUrl, platform, signal);
-        const vSafe = safeTunnelUrl(r.videoUrl);
-        return {
-          success: true, source: "gallerydl", type: "tunnel",
-          data: {
-            videoUrl: vSafe.url, audioUrl: null, tunnelAllowed: vSafe.tunnelAllowed,
-            filename: r.filename, title: r.title, thumbnail: r.thumbnail, type: "tunnel"
-          }
-        };
-      } catch (e: any) {
-        log("warn", "gallerydl", "Failed", { error: e.message?.slice(0, 100) });
-        cbFailure("gallerydl");
+      if (clientDisconnectController.signal.aborted) {
+        throw new Error("Aborted before entering backend pipeline execution queues");
       }
-    }
 
-    // ── TIER 4: Playwright browser fallback ──────────────────────────────────
-    try {
-      log("info", "playwright", "Attempting browser extraction", { url: resolvedUrl.slice(0, 80) });
-      const r = await extractWithPlaywright(resolvedUrl, platform, signal);
-      const safe = safeTunnelUrl(r.videoUrl);
-      return {
-        success: true, source: "playwright", type: "tunnel",
-        data: {
-          videoUrl: safe.url, audioUrl: null, tunnelAllowed: safe.tunnelAllowed,
-          title: r.title, thumbnail: r.thumbnail, type: "tunnel"
+      // ───────────────────────────────────────────────────────────────────────
+      // TIER 1: Cobalt Engine Extraction
+      // ───────────────────────────────────────────────────────────────────────
+      try {
+        log("info", "download", "Executing Tier 1 (Cobalt)", { url: resolvedUrl.slice(0, 80) });
+        const res = await getCobaltDownloadUrl(resolvedUrl, quality, clientDisconnectController.signal);
+        
+        const tunnelInfo = safeTunnelUrl(res.url);
+        payload = {
+          url: tunnelInfo.url,
+          audioUrl: res.audioUrl ? safeTunnelUrl(res.audioUrl).url : null,
+          title: res.filename.replace(/\.[^/.]+$/, ""),
+          thumbnail: null,
+          duration: 0,
+          ext: res.filename.split(".").pop() ?? "mp4",
+          mimeType: guessMime(res.filename),
+          tunnelAllowed: tunnelInfo.tunnelAllowed,
+        };
+        usedTier = "cobalt";
+      } catch (err: any) {
+        log("warn", "download", "Tier 1 (Cobalt) fallback triggered", { error: err.message });
+      }
+
+      // ───────────────────────────────────────────────────────────────────────
+      // TIER 2: yt-dlp Engine Extraction with Structural Mutation Iterations
+      // ───────────────────────────────────────────────────────────────────────
+      if (!payload) {
+        try {
+          log("info", "download", "Executing Tier 2 (yt-dlp mutation)", { url: resolvedUrl.slice(0, 80) });
+          const res = await getYtDlpWithMutation(resolvedUrl, platform, quality, clientDisconnectController.signal);
+          
+          const tunnelInfo = safeTunnelUrl(res.videoUrl);
+          payload = {
+            url: tunnelInfo.url,
+            audioUrl: res.audioUrl ? safeTunnelUrl(res.audioUrl).url : null,
+            title: res.title,
+            thumbnail: res.thumbnail,
+            duration: res.duration,
+            ext: res.ext,
+            mimeType: guessMime(`video.${res.ext}`),
+            tunnelAllowed: tunnelInfo.tunnelAllowed,
+            strategyUsed: res.strategyUsed,
+          };
+          usedTier = "ytdlp";
+        } catch (err: any) {
+          log("warn", "download", "Tier 2 (yt-dlp mutation) fallback triggered", { error: err.message });
         }
-      };
-    } catch (e: any) {
-      log("error", "playwright", "Browser extraction failed", { error: e.message?.slice(0, 100) });
-      const c = classifyError(e?.message ?? "");
-      return {
-        _error: true, statusCode: c.statusCode,
-        body: { success: false, message: c.message, platform, ...(IS_DEV && { debug: e?.message }) }
-      };
+      }
+
+      // ───────────────────────────────────────────────────────────────────────
+      // TIER 3: gallery-dl Engine Structural Backup
+      // ───────────────────────────────────────────────────────────────────────
+      if (!payload && (platform === "instagram" || platform === "tiktok" || platform === "pinterest")) {
+        try {
+          log("info", "download", "Executing Tier 3 (gallery-dl)", { url: resolvedUrl.slice(0, 80) });
+          const res = await getGalleryDlDownloadUrl(resolvedUrl, platform, clientDisconnectController.signal);
+          
+          const tunnelInfo = safeTunnelUrl(res.videoUrl);
+          payload = {
+            url: tunnelInfo.url,
+            audioUrl: null,
+            title: res.title,
+            thumbnail: res.thumbnail,
+            duration: 0,
+            ext: res.filename.split(".").pop() ?? "mp4",
+            mimeType: guessMime(res.filename),
+            tunnelAllowed: tunnelInfo.tunnelAllowed,
+          };
+          usedTier = "gallerydl";
+        } catch (err: any) {
+          log("warn", "download", "Tier 3 (gallery-dl) fallback triggered", { error: err.message });
+        }
+      }
+
+      // ───────────────────────────────────────────────────────────────────────
+      // TIER 4: Automated Headless Browser Execution Engine Fallback (Playwright)
+      // ───────────────────────────────────────────────────────────────────────
+      if (!payload) {
+        try {
+          log("info", "download", "Executing Tier 4 Browser Core Fallback", { url: resolvedUrl.slice(0, 80) });
+          
+          const pInstance = proxyPool.pick(platform);
+          const pConfig = pInstance ? proxyPool.playwrightProxy(pInstance) : undefined;
+
+          const res = await extractWithPlaywright({
+            url: resolvedUrl,
+            platform,
+            proxy: pConfig,
+            signal: clientDisconnectController.signal,
+          });
+
+          if (!res?.videoUrl) throw new Error("Playwright extraction failed to capture any media resource streams");
+
+          if (pInstance) proxyPool.success(pInstance);
+
+          const tunnelInfo = safeTunnelUrl(res.videoUrl);
+          payload = {
+            url: tunnelInfo.url,
+            audioUrl: null,
+            title: res.title ?? "downloaded_video",
+            thumbnail: res.thumbnail ?? null,
+            duration: 0,
+            ext: "mp4",
+            mimeType: guessMime("video.mp4"),
+            tunnelAllowed: tunnelInfo.tunnelAllowed,
+          };
+          usedTier = "playwright";
+        } catch (err: any) {
+          log("error", "download", "Tier 4 Browser Core Fallback engine crashed completely", { error: err.message });
+        }
+      }
+
+      // Explicit validation checkpoint: If all engines returned null, do NOT dedupe a success state
+      if (!payload) return null;
+
+      return { source: usedTier, data: payload };
+    });
+
+    // Check if dedupe resolved clean results down to this execution block
+    if (!finalResult) {
+      return reply.code(500).send({
+        success: false,
+        message: "All extractor fallback infrastructure engines exhausted. Stream location failed.",
+      });
     }
-  };
 
-  const result = await dedupe(cacheKey, execute);
+    // 4. Update memory caches and finish requests securely
+    const expiryWindow = cacheTtl(platform);
+    await cache.set(cacheKey, finalResult.data, expiryWindow);
 
-  if ((result as any)._error) {
-    const err = result as any;
-    return reply.code(err.statusCode).send(err.body);
+    responseFinished = true;
+    return reply.code(200).send({
+      success: true,
+      source: finalResult.source,
+      message: "Download link generated successfully",
+      data: finalResult.data,
+    });
+
+  } catch (outerException: any) {
+    if (outerException?._isBusy) {
+      return reply.code(503).send({
+        success: false,
+        message: "Server is currently operating under maximum concurrency thresholds. Queue buffer full.",
+      });
+    }
+    log("error", "download", "Unhandled operational processing exception crashed root handler pipeline", { error: outerException.message });
+    return reply.code(500).send({ success: false, message: "Internal application core system processing breakdown" });
   }
-
-  await cache.set(cacheKey, result, cacheTtl(platform));
-  return reply.code(200).send(result);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
