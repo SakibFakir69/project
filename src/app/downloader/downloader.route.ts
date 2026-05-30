@@ -3,7 +3,7 @@ import { downloadController } from "./downloader.controller.js";
 
 export async function downloadRoutes(app: FastifyInstance) {
 
-  
+
   app.post("/video/formats", {
     config: {
       rateLimit: {
@@ -19,8 +19,8 @@ export async function downloadRoutes(app: FastifyInstance) {
       },
     },
   }, downloadController.getVideoInfo);
-  
-app.get('/health', downloadController.healthCheck);
+
+  app.get('/health', downloadController.healthCheck);
 
   app.get("/resolve-url", downloadController.resolveUrl);
   app.post("/video/download", {
@@ -43,7 +43,7 @@ app.get('/health', downloadController.healthCheck);
           },
           quality: {
             type: "string",
-            enum: ["best","144", "240", "360", "480", "720", "1080", "1440", "2160"],
+            enum: ["best", "144", "240", "360", "480", "720", "1080", "1440", "2160"],
             default: "720",
           },
           audioFormat: {
