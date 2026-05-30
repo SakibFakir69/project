@@ -20,13 +20,13 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import { execFile }         from "node:child_process";
-import { statSync }         from "node:fs";
-import { promisify }        from "node:util";
+import { execFile } from "node:child_process";
+import { statSync } from "node:fs";
+import { promisify } from "node:util";
 import type { FastifyRequest, FastifyReply } from "fastify";
 
-import { isUrlSafe }                           from "../../utils/download.utils.js";
-import { getReferer, TIMEOUTS }                from "../../constant/index.contant.js";
+import { isUrlSafe } from "../../utils/download.utils.js";
+import { getReferer, TIMEOUTS } from "../../constant/index.contant.js";
 import type { VideoQuality, DownloadType, AudioFormat } from "../../types/index.js";
 import { proxyPool } from "../../Proxy/Proxy.pool.js";
 import { cookieManager } from "../../cookies/Cookie.manager.js";
@@ -34,18 +34,18 @@ import { identityManager } from "../../manager/Identity.manager.js";
 import { getAdapter } from "../../index/index.adapter.js";
 import { extractWithPlaywright } from "../../Playwright/Playwright.extractor.js";
 import { scheduleDaily } from "../../cron/Updater.cron.js";
-import type { AttemptContext }         from "./../../adapter/ Base.adapter.js"
+import type { AttemptContext } from "./../../adapter/ Base.adapter.js"
 
 
 
 // ── Config ────────────────────────────────────────────────────────────────────
 // SECURITY: credentials live in .env only — never hardcoded in source
 
-const BASE_URL   = process.env.API_URL    ?? "https://downtubebest.duckdns.org/api/v1";
+const BASE_URL = process.env.API_URL ?? "https://downtubebest.duckdns.org/api/v1";
 const COBALT_URL = process.env.COBALT_URL ?? "http://cobalt-api:9000";
-const REDIS_URL  = process.env.REDIS_URL  ?? "";   // set in .env, never here
-const NODE_ENV   = process.env.NODE_ENV   ?? "production";
-const IS_DEV     = NODE_ENV === "development";
+const REDIS_URL = process.env.REDIS_URL ?? "";   // set in .env, never here
+const NODE_ENV = process.env.NODE_ENV ?? "production";
+const IS_DEV = NODE_ENV === "development";
 
 const YTDLP_MAX_AGE_DAYS = parseInt(process.env.YTDLP_MAX_AGE_DAYS ?? "7", 10);
 
@@ -53,7 +53,7 @@ const execFilePromise = promisify(execFile);
 
 const EXEC_OPTS = {
   killSignal: "SIGKILL" as const,
-  maxBuffer:  8 * 1024 * 1024,
+  maxBuffer: 8 * 1024 * 1024,
 };
 
 // ── Start daily yt-dlp updater ────────────────────────────────────────────────
@@ -61,11 +61,11 @@ scheduleDaily();
 
 // ── Rate limit config ─────────────────────────────────────────────────────────
 export const RATE_LIMIT_OPTIONS = {
-  max:        10,
+  max: 10,
   timeWindow: 60_000,
   errorResponseBuilder: (_req: any, context: any) => ({
-    success:    false,
-    message:    `Rate limit exceeded. Retry in ${Math.ceil(context.ttl / 1000)}s.`,
+    success: false,
+    message: `Rate limit exceeded. Retry in ${Math.ceil(context.ttl / 1000)}s.`,
     retryAfter: Math.ceil(context.ttl / 1000),
   }),
 };
@@ -73,34 +73,34 @@ export const RATE_LIMIT_OPTIONS = {
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface VideoInfoBody { url: string; }
-interface DownloadBody  {
-  url:          string;
-  type?:        DownloadType;
-  quality?:     VideoQuality;
+interface DownloadBody {
+  url: string;
+  type?: DownloadType;
+  quality?: VideoQuality;
   audioFormat?: AudioFormat;
 }
 
 interface YtDlpFormat {
-  url?:    string;
+  url?: string;
   vcodec?: string;
   acodec?: string;
 }
 
 interface YtDlpMeta {
   requested_formats?: YtDlpFormat[];
-  url?:       string;
-  title?:     string;
+  url?: string;
+  title?: string;
   thumbnail?: string;
-  duration?:  number;
-  ext?:       string;
+  duration?: number;
+  ext?: string;
 }
 
 interface CobaltApiResponse {
-  status:    "tunnel" | "redirect" | "picker" | "error";
-  url?:      string;
+  status: "tunnel" | "redirect" | "picker" | "error";
+  url?: string;
   filename?: string;
-  picker?:   Array<{ type: string; url: string }>;
-  error?:    { code: string };
+  picker?: Array<{ type: string; url: string }>;
+  error?: { code: string };
 }
 
 // ── Structured JSON logger ────────────────────────────────────────────────────
@@ -110,7 +110,7 @@ type LogLevel = "info" | "warn" | "error" | "debug";
 function log(level: LogLevel, service: string, msg: string, extra?: Record<string, any>) {
   const entry = { ts: new Date().toISOString(), level, service, msg, ...extra };
   if (level === "error") process.stderr.write(JSON.stringify(entry) + "\n");
-  else                   process.stdout.write(JSON.stringify(entry) + "\n");
+  else process.stdout.write(JSON.stringify(entry) + "\n");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -127,9 +127,9 @@ interface ICache {
 interface MemEntry { value: any; expiresAt: number; }
 
 class MemoryCache implements ICache {
-  private map     = new Map<string, MemEntry>();
+  private map = new Map<string, MemEntry>();
   private maxSize = 300;
-  private _size   = 0;
+  private _size = 0;
 
   async get(key: string): Promise<any | null> {
     const e = this.map.get(key);
@@ -154,8 +154,8 @@ class MemoryCache implements ICache {
 }
 
 class RedisCache implements ICache {
-  private client: any  = null;
-  private mem          = new MemoryCache();
+  private client: any = null;
+  private mem = new MemoryCache();
 
   async init(url: string): Promise<void> {
     try {
@@ -200,14 +200,14 @@ if (REDIS_URL) {
 
 // Platform-specific TTLs
 const PLATFORM_TTL_MS: Record<string, number> = {
-  youtube:   6 * 60 * 60_000,
-  vimeo:     4 * 60 * 60_000,
-  reddit:    2 * 60 * 60_000,
-  twitter:   1 * 60 * 60_000,
-  tiktok:    45 * 60_000,
+  youtube: 6 * 60 * 60_000,
+  vimeo: 4 * 60 * 60_000,
+  reddit: 2 * 60 * 60_000,
+  twitter: 1 * 60 * 60_000,
+  tiktok: 45 * 60_000,
   instagram: 45 * 60_000,
-  facebook:  30 * 60_000,
-  generic:   60 * 60_000,
+  facebook: 30 * 60_000,
+  generic: 60 * 60_000,
 };
 
 function cacheTtl(platform: string): number {
@@ -220,7 +220,7 @@ function cacheTtl(platform: string): number {
 
 async function checkYtDlpFreshness(): Promise<void> {
   try {
-        const { stdout } = await execFilePromise("which", ["yt-dlp"], { encoding: "utf8" });
+    const { stdout } = await execFilePromise("which", ["yt-dlp"], { encoding: "utf8" });
     const { mtimeMs } = statSync((stdout as string).trim());
     const ageDays = (Date.now() - mtimeMs) / 86_400_000;
     if (ageDays > YTDLP_MAX_AGE_DAYS) {
@@ -272,14 +272,14 @@ function safeTunnelUrl(raw: string): { url: string; tunnelAllowed: boolean } {
 // ── Semaphore ─────────────────────────────────────────────────────────────────
 
 const MAX_CONCURRENT_PROCS = parseInt(process.env.MAX_PROCS ?? "8", 10);
-const MAX_QUEUE_DEPTH       = 50;
+const MAX_QUEUE_DEPTH = 50;
 
 class Semaphore {
   private running = 0;
   private queue: Array<() => void> = [];
-  constructor(private limit: number) {}
-  get queueDepth():  number { return this.queue.length; }
-  get runningCount():number { return this.running; }
+  constructor(private limit: number) { }
+  get queueDepth(): number { return this.queue.length; }
+  get runningCount(): number { return this.running; }
   acquire(): Promise<void> {
     if (this.running < this.limit) { this.running++; return Promise.resolve(); }
     return new Promise(r => this.queue.push(r));
@@ -296,7 +296,7 @@ async function withSemaphore<T>(fn: () => Promise<T>): Promise<T> {
   if (procSemaphore.queueDepth >= MAX_QUEUE_DEPTH)
     throw Object.assign(new Error("Server busy"), { _isBusy: true });
   await procSemaphore.acquire();
-  try   { return await fn(); }
+  try { return await fn(); }
   finally { procSemaphore.release(); }
 }
 
@@ -320,21 +320,21 @@ setInterval(probeCobalt, 2 * 60_000);
 // ── Platform detection ────────────────────────────────────────────────────────
 
 type Platform =
-  | "youtube" | "tiktok"  | "instagram" | "twitter"
-  | "reddit"  | "facebook"| "pinterest" | "tumblr"
-  | "vimeo"   | "twitch"  | "generic";
+  | "youtube" | "tiktok" | "instagram" | "twitter"
+  | "reddit" | "facebook" | "pinterest" | "tumblr"
+  | "vimeo" | "twitch" | "generic";
 
 function detectPlatform(url: string): Platform {
-  if (/youtube\.com|youtu\.be/i.test(url))                   return "youtube";
-  if (/tiktok\.com|vm\.tiktok|vt\.tiktok/i.test(url))       return "tiktok";
-  if (/instagram\.com/i.test(url))                           return "instagram";
-  if (/twitter\.com|x\.com/i.test(url))                     return "twitter";
-  if (/reddit\.com|redd\.it/i.test(url))                    return "reddit";
-  if (/facebook\.com|fb\.watch/i.test(url))                 return "facebook";
-  if (/pinterest\.com|pin\.it/i.test(url))                  return "pinterest";
-  if (/tumblr\.com/i.test(url))                             return "tumblr";
-  if (/vimeo\.com/i.test(url))                              return "vimeo";
-  if (/twitch\.tv|clips\.twitch\.tv/i.test(url))           return "twitch";
+  if (/youtube\.com|youtu\.be/i.test(url)) return "youtube";
+  if (/tiktok\.com|vm\.tiktok|vt\.tiktok/i.test(url)) return "tiktok";
+  if (/instagram\.com/i.test(url)) return "instagram";
+  if (/twitter\.com|x\.com/i.test(url)) return "twitter";
+  if (/reddit\.com|redd\.it/i.test(url)) return "reddit";
+  if (/facebook\.com|fb\.watch/i.test(url)) return "facebook";
+  if (/pinterest\.com|pin\.it/i.test(url)) return "pinterest";
+  if (/tumblr\.com/i.test(url)) return "tumblr";
+  if (/vimeo\.com/i.test(url)) return "vimeo";
+  if (/twitch\.tv|clips\.twitch\.tv/i.test(url)) return "twitch";
   return "generic";
 }
 
@@ -347,38 +347,38 @@ export interface ClassifiedError {
 function classifyError(raw: string): ClassifiedError {
   const s = (raw ?? "").toLowerCase();
   if (s.includes("429") || s.includes("rate limit") || s.includes("too many requests"))
-    return { message: "Rate limit hit — try again in a few minutes", retryable: true,  statusCode: 429, category: "rate_limit" };
+    return { message: "Rate limit hit — try again in a few minutes", retryable: true, statusCode: 429, category: "rate_limit" };
   if (s.includes("private") || s.includes("login required") || s.includes("age-restricted"))
-    return { message: "Video is private or requires login",          retryable: false, statusCode: 403, category: "auth" };
+    return { message: "Video is private or requires login", retryable: false, statusCode: 403, category: "auth" };
   if (s.includes("unavailable") || s.includes("not found") || s.includes("404") || s.includes("deleted"))
-    return { message: "Video is unavailable or removed",            retryable: false, statusCode: 404, category: "not_found" };
+    return { message: "Video is unavailable or removed", retryable: false, statusCode: 404, category: "not_found" };
   if (s.includes("geo") || s.includes("not available in your country"))
-    return { message: "Video is geo-restricted",                    retryable: false, statusCode: 451, category: "geo" };
+    return { message: "Video is geo-restricted", retryable: false, statusCode: 451, category: "geo" };
   if (s.includes("copyright") || s.includes("dmca"))
-    return { message: "Video is blocked due to copyright",          retryable: false, statusCode: 403, category: "copyright" };
+    return { message: "Video is blocked due to copyright", retryable: false, statusCode: 403, category: "copyright" };
   if (s.includes("network") || s.includes("timeout") || s.includes("connection") ||
-      s.includes("502") || s.includes("503") || s.includes("504"))
-    return { message: "Network error — retrying",                   retryable: true,  statusCode: 503, category: "network" };
+    s.includes("502") || s.includes("503") || s.includes("504"))
+    return { message: "Network error — retrying", retryable: true, statusCode: 503, category: "network" };
   if (s.includes("nsig") || s.includes("player") || s.includes("signature") ||
-      s.includes("bot") || s.includes("automated") || s.includes("potoken"))
+    s.includes("bot") || s.includes("automated") || s.includes("potoken"))
     return { message: "YouTube player error — yt-dlp may need updating", retryable: false, statusCode: 500, category: "player" };
   if (s.includes("no video formats") || s.includes("format is not available"))
-    return { message: "No matching video format",                   retryable: true,  statusCode: 500, category: "format" };
+    return { message: "No matching video format", retryable: true, statusCode: 500, category: "format" };
   if (s.includes("no space") || s.includes("out of memory"))
-    return { message: "Server resource error",                      retryable: false, statusCode: 500, category: "resource" };
-  return { message: "Failed to process video URL",                  retryable: false, statusCode: 500, category: "unknown" };
+    return { message: "Server resource error", retryable: false, statusCode: 500, category: "resource" };
+  return { message: "Failed to process video URL", retryable: false, statusCode: 500, category: "unknown" };
 }
 
 // ── Circuit breakers ──────────────────────────────────────────────────────────
 
 interface CBState { failures: number; openUntil: number; halfOpen: boolean; }
 
-const CB_THRESHOLD   = 5;
+const CB_THRESHOLD = 5;
 const CB_COOLDOWN_MS = 30_000;
 
 const circuitBreakers: Record<string, CBState> = {
-  cobalt:    { failures: 0, openUntil: 0, halfOpen: false },
-  ytdlp:     { failures: 0, openUntil: 0, halfOpen: false },
+  cobalt: { failures: 0, openUntil: 0, halfOpen: false },
+  ytdlp: { failures: 0, openUntil: 0, halfOpen: false },
   gallerydl: { failures: 0, openUntil: 0, halfOpen: false },
 };
 
@@ -431,14 +431,18 @@ function dedupe<T>(key: string, fn: () => Promise<T>): Promise<T> {
 async function resolveRedirectUrl(url: string): Promise<string> {
   try {
     const res = await fetch(url, {
-      method: "HEAD", redirect: "follow", signal: AbortSignal.timeout(8_000),
-      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+      method: "GET", redirect: "follow", signal: AbortSignal.timeout(8_000),
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Range": "bytes=0-0",  // only fetch 1 byte — don't download the video
+      },
     });
     let resolved = res.url || url;
     if ((resolved.includes("tiktok.com") || resolved.includes("instagram.com")) && resolved.includes("?"))
       resolved = resolved.split("?")[0];
-    if (resolved !== url) log("debug", "resolver", "Resolved redirect", { from: url.slice(0,60), to: resolved.slice(0,60) });
+    if (resolved !== url) log("debug", "resolver", "Resolved redirect", { from: url.slice(0, 80), to: resolved.slice(0, 120) });
     return resolved;
+
   } catch { return url; }
 }
 
@@ -453,13 +457,13 @@ async function resolveRedirectUrl(url: string): Promise<string> {
 // This is why mutation-based retry succeeds where identical retry fails.
 
 function buildAttemptContext(
-  url:          string,
-  platform:     Platform,
+  url: string,
+  platform: Platform,
   attemptIndex: number,
-  signal?:      AbortSignal,
+  signal?: AbortSignal,
 ): AttemptContext {
-  const proxy    = proxyPool.pickByIndex(attemptIndex);
-  const cookie   = cookieManager.byIndex(platform as any, attemptIndex);
+  const proxy = proxyPool.pickByIndex(attemptIndex);
+  const cookie = cookieManager.byIndex(platform as any, attemptIndex);
   const identity = identityManager.forAttempt(attemptIndex);
 
   return { attemptIndex, proxy: proxy?.url ?? null, cookiePath: cookie, identity, signal };
@@ -468,13 +472,13 @@ function buildAttemptContext(
 // ── yt-dlp arg builder (uses adapter + mutation context) ─────────────────────
 
 function buildYtDlpArgs(
-  url:          string,
-  platform:     Platform,
-  ctx:          AttemptContext,
-  extra:        string[],
+  url: string,
+  platform: Platform,
+  ctx: AttemptContext,
+  extra: string[],
 ): string[] {
-  const adapter     = getAdapter(platform);
-  const referer     = getReferer(url);
+  const adapter = getAdapter(platform);
+  const referer = getReferer(url);
 
   const args: string[] = [
     "--no-check-certificate", "--no-playlist",
@@ -492,25 +496,25 @@ function buildYtDlpArgs(
     ...extra,
     url,
   ];
-    // FIX 4: Safely inject cookies at the end of the array, before the URL
+  // FIX 4: Safely inject cookies at the end of the array, before the URL
   if (ctx.cookiePath && !args.includes("--cookies")) {
     const targetUrl = args.pop(); // Remove the URL (always the last element)
     args.push("--cookies", ctx.cookiePath, targetUrl!);
   }
-    return args;
+  return args;
 }
 
 // ── gallery-dl arg builder ────────────────────────────────────────────────────
 
 function buildGalleryDlArgs(url: string, platform: Platform, ctx: AttemptContext, extra: string[]): string[] {
-  const adapter  = getAdapter(platform);
-  const proxy    = proxyPool.pickByIndex(ctx.attemptIndex);
+  const adapter = getAdapter(platform);
+  const proxy = proxyPool.pickByIndex(ctx.attemptIndex);
   const proxyStr = proxy?.url ?? null;
 
   return [
     "--no-mtime", "--filename", "{id}.{extension}",
-    ...(proxyStr        ? ["--proxy", proxyStr]          : []),
-    ...(ctx.cookiePath  ? ["--cookies", ctx.cookiePath]  : []),
+    ...(proxyStr ? ["--proxy", proxyStr] : []),
+    ...(ctx.cookiePath ? ["--cookies", ctx.cookiePath] : []),
     ...adapter.galleryDlPlatformArgs(ctx),
     ...extra,
     url,
@@ -527,10 +531,10 @@ async function getCobaltDownloadUrl(resolvedUrl: string, quality = "720", signal
   if (!cobaltReachable) throw new Error("[Cobalt] Unreachable");
   if (cbIsOpen("cobalt")) throw new Error("[CB] Cobalt circuit open");
 
-  const validQ = ["144","240","360","480","720","1080","1440","2160"];
-  const q      = validQ.includes(quality.replace("p","")) ? quality.replace("p","") : "720";
+  const validQ = ["144", "240", "360", "480", "720", "1080", "1440", "2160"];
+  const q = validQ.includes(quality.replace("p", "")) ? quality.replace("p", "") : "720";
 
-    // FIX 2: Combine timeout signal with client disconnect signal
+  // FIX 2: Combine timeout signal with client disconnect signal
   const timeoutSignal = AbortSignal.timeout(15_000);
   const fetchSignal = signal ? AbortSignal.any([timeoutSignal, signal]) : timeoutSignal;
 
@@ -539,13 +543,13 @@ async function getCobaltDownloadUrl(resolvedUrl: string, quality = "720", signal
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ url: resolvedUrl, videoQuality: q, filenameStyle: "classic", downloadMode: "auto", youtubeVideoCodec: "h264" }),
   });
-  if (!response.ok) { 
+  if (!response.ok) {
     // Only trip circuit breaker on systemic issues (429 rate limit, 500+ server errors)
     // Do NOT trip for 400/404 (user errors like invalid URLs)
     if (response.status === 429 || response.status >= 500) {
-      cbFailure("cobalt"); 
+      cbFailure("cobalt");
     }
-    throw new Error(`Cobalt HTTP ${response.status}`); 
+    throw new Error(`Cobalt HTTP ${response.status}`);
   }
 
   const data: CobaltApiResponse = await response.json();
@@ -577,26 +581,26 @@ interface YtDlpResult {
 }
 
 async function getYtDlpWithMutation(
-  url:       string,
-  platform:  Platform,
-  quality:   string,
-  signal?:   AbortSignal,
+  url: string,
+  platform: Platform,
+  quality: string,
+  signal?: AbortSignal,
 ): Promise<YtDlpResult> {
   if (cbIsOpen("ytdlp")) throw new Error("[CB] yt-dlp circuit open");
 
-  const adapter   = getAdapter(platform);
+  const adapter = getAdapter(platform);
   const strategies = adapter.formatStrategies;
-  let   lastErr: any;
+  let lastErr: any;
 
   // Each outer attempt = different identity/proxy/cookie
   for (let attempt = 0; attempt < adapter.maxAttempts; attempt++) {
-    const ctx      = buildAttemptContext(url, platform, attempt, signal);
+    const ctx = buildAttemptContext(url, platform, attempt, signal);
     const strategy = strategies[attempt % strategies.length];
 
     log("info", "ytdlp", `Attempt ${attempt + 1}/${adapter.maxAttempts}`, {
-      client:   ctx.identity.clientName,
-      proxy:    ctx.proxy ? "yes" : "no",
-      cookie:   ctx.cookiePath ? "yes" : "no",
+      client: ctx.identity.clientName,
+      proxy: ctx.proxy ? "yes" : "no",
+      cookie: ctx.cookiePath ? "yes" : "no",
       strategy: strategy.slice(0, 50),
     });
 
@@ -609,7 +613,7 @@ async function getYtDlpWithMutation(
     try {
       const { stdout } = await withSemaphore(async () => {
         if (signal?.aborted) throw new Error("Request aborted");
-        const ac  = new AbortController();
+        const ac = new AbortController();
         const tid = setTimeout(() => ac.abort(), TIMEOUTS.url ?? 60_000);
         if (signal) signal.addEventListener("abort", () => ac.abort(), { once: true });
         try {
@@ -658,7 +662,7 @@ async function getYtDlpWithMutation(
 
       log("warn", "ytdlp", `Attempt ${attempt + 1} failed`, { category: c.category, error: err?.message?.slice(0, 100) });
 
-       // FIX 1: Only trip circuit breaker on systemic downstream issues (429, 500, network)
+      // FIX 1: Only trip circuit breaker on systemic downstream issues (429, 500, network)
       // Do NOT trip for 404 (deleted) or 403 (private/geo) - those are correct user-data errors.
       if (c.category === "rate_limit" || c.category === "network" || c.statusCode >= 500) {
         cbFailure("ytdlp");
@@ -681,7 +685,7 @@ async function getYtDlpWithMutation(
 }
 
 async function getYtDlpInfo(url: string, platform: Platform): Promise<{ title: string; thumbnail: string | null; duration: number; ext: string }> {
-  const ctx  = buildAttemptContext(url, platform, 0);
+  const ctx = buildAttemptContext(url, platform, 0);
   const args = buildYtDlpArgs(url, platform, ctx, ["--dump-json", "--skip-download", "--no-playlist"]);
 
   const { stdout } = await withSemaphore(() =>
@@ -704,14 +708,14 @@ interface GalleryDlResult { videoUrl: string; audioUrl: string | null; filename:
 async function getGalleryDlDownloadUrl(url: string, platform: Platform, signal?: AbortSignal): Promise<GalleryDlResult> {
   if (cbIsOpen("gallerydl")) throw new Error("[CB] gallery-dl circuit open");
 
-  const ctx  = buildAttemptContext(url, platform, 0, signal);
+  const ctx = buildAttemptContext(url, platform, 0, signal);
   const args = buildGalleryDlArgs(url, platform, ctx, [
     "--dump-json", "--no-download", "--no-part", "--timeout", "30", "--retries", "3",
   ]);
 
   const { stdout } = await withSemaphore(async () => {
     if (signal?.aborted) throw new Error("Request aborted");
-    const ac  = new AbortController();
+    const ac = new AbortController();
     const tid = setTimeout(() => ac.abort(), TIMEOUTS.gallerydl ?? 45_000);
     if (signal) signal.addEventListener("abort", () => ac.abort(), { once: true });
     try { return await execFilePromise("gallery-dl", args, { ...EXEC_OPTS, signal: ac.signal as any }); }
@@ -737,11 +741,11 @@ async function getGalleryDlDownloadUrl(url: string, platform: Platform, signal?:
 
   if (typeof meta === "string") {
     directUrl = meta; filename = meta.split("/").pop()?.split("?")[0] ?? "video.mp4";
-    title     = filename.replace(/\.[^/.]+$/, "");
+    title = filename.replace(/\.[^/.]+$/, "");
   } else {
     directUrl = meta.url ?? meta._url ?? "";
-    filename  = meta.filename ?? `${meta.id ?? "video"}.${meta.extension ?? "mp4"}`;
-    title     = meta.title ?? meta.description?.slice(0, 100) ?? filename;
+    filename = meta.filename ?? `${meta.id ?? "video"}.${meta.extension ?? "mp4"}`;
+    title = meta.title ?? meta.description?.slice(0, 100) ?? filename;
     thumbnail = meta.thumbnail ?? null;
   }
 
@@ -756,7 +760,7 @@ async function getGalleryDlDownloadUrl(url: string, platform: Platform, signal?:
 
 function guessMime(filename: string): string {
   const ext = (filename.split(".").pop() ?? "").toLowerCase();
-  return ({ mp4: "video/mp4", webm: "video/webm", mkv: "video/x-matroska", mov: "video/quicktime", m4a: "audio/mp4", aac: "audio/aac", mp3: "audio/mpeg", ogg: "audio/ogg", ts: "video/mp2t", flv: "video/x-flv" } as Record<string,string>)[ext] ?? "application/octet-stream";
+  return ({ mp4: "video/mp4", webm: "video/webm", mkv: "video/x-matroska", mov: "video/quicktime", m4a: "audio/mp4", aac: "audio/aac", mp3: "audio/mpeg", ogg: "audio/ogg", ts: "video/mp2t", flv: "video/x-flv" } as Record<string, string>)[ext] ?? "application/octet-stream";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -786,7 +790,7 @@ export const getVideoInfo = async (
 
   const result = await dedupe(cacheKey, async () => {
     const data = await getYtDlpInfo(resolvedUrl, platform)
-      .catch(e => { log("warn", "ytdlp", "Info failed", { error: e.message?.slice(0,100) }); return null; });
+      .catch(e => { log("warn", "ytdlp", "Info failed", { error: e.message?.slice(0, 100) }); return null; });
     return data ? { source: "ytdlp" as const, data } : null;
   });
 
@@ -814,11 +818,11 @@ export const getDownloadLink = async (
   if (!isUrlSafe(resolvedUrl))
     return reply.code(400).send({ success: false, message: "Invalid or unsupported URL" });
 
-  const validQ            = ["144","240","360","480","720","1080","1440","2160"];
-  const normalizedQuality = validQ.includes(String(quality).replace("p","")) ? String(quality).replace("p","") : "720";
-  const platform          = detectPlatform(resolvedUrl);
-  const adapter           = getAdapter(platform);
-  const cacheKey          = `dl:${resolvedUrl}:${normalizedQuality}`;
+  const validQ = ["144", "240", "360", "480", "720", "1080", "1440", "2160"];
+  const normalizedQuality = validQ.includes(String(quality).replace("p", "")) ? String(quality).replace("p", "") : "720";
+  const platform = detectPlatform(resolvedUrl);
+  const adapter = getAdapter(platform);
+  const cacheKey = `dl:${resolvedUrl}:${normalizedQuality}`;
 
   const cached = await cache.get(cacheKey);
   if (cached) {
@@ -840,13 +844,15 @@ export const getDownloadLink = async (
     // ── TIER 1: Cobalt ────────────────────────────────────────────────────────
     if (adapter.useCobalt && !cbIsOpen("cobalt") && cobaltReachable) {
       try {
-                const r = await getCobaltDownloadUrl(resolvedUrl, normalizedQuality, signal); // FIX 2: Pass signal
+        const r = await getCobaltDownloadUrl(resolvedUrl, normalizedQuality, signal); // FIX 2: Pass signal
         log("info", "cobalt", "Success");
         const vSafe = safeTunnelUrl(r.url);
         const aSafe = r.audioUrl ? safeTunnelUrl(r.audioUrl) : { url: null, tunnelAllowed: true };
-        return { success: true, source: "cobalt", type: r.type,
-          data: { videoUrl: vSafe.url, audioUrl: aSafe.url, tunnelAllowed: vSafe.tunnelAllowed, filename: r.filename, type: r.type } };
-      } catch (e: any) { log("warn", "cobalt", "Failed", { error: e.message?.slice(0,100) }); }
+        return {
+          success: true, source: "cobalt", type: r.type,
+          data: { videoUrl: vSafe.url, audioUrl: aSafe.url, tunnelAllowed: vSafe.tunnelAllowed, filename: r.filename, type: r.type }
+        };
+      } catch (e: any) { log("warn", "cobalt", "Failed", { error: e.message?.slice(0, 100) }); }
     }
 
     // ── TIER 2: yt-dlp with mutation retry ───────────────────────────────────
@@ -855,10 +861,14 @@ export const getDownloadLink = async (
         const r = await getYtDlpWithMutation(resolvedUrl, platform, normalizedQuality, signal);
         const vSafe = safeTunnelUrl(r.videoUrl);
         const aSafe = r.audioUrl ? safeTunnelUrl(r.audioUrl) : { url: null, tunnelAllowed: true };
-        return { success: true, source: "ytdlp", type: r.audioUrl ? "split" : "tunnel",
-          data: { videoUrl: vSafe.url, audioUrl: aSafe.url, tunnelAllowed: vSafe.tunnelAllowed,
-            type: r.audioUrl ? "split" : "tunnel", strategyUsed: r.strategyUsed, title: r.title, thumbnail: r.thumbnail } };
-      } catch (e: any) { log("warn", "ytdlp", "All attempts failed", { error: e.message?.slice(0,100) }); }
+        return {
+          success: true, source: "ytdlp", type: r.audioUrl ? "split" : "tunnel",
+          data: {
+            videoUrl: vSafe.url, audioUrl: aSafe.url, tunnelAllowed: vSafe.tunnelAllowed,
+            type: r.audioUrl ? "split" : "tunnel", strategyUsed: r.strategyUsed, title: r.title, thumbnail: r.thumbnail
+          }
+        };
+      } catch (e: any) { log("warn", "ytdlp", "All attempts failed", { error: e.message?.slice(0, 100) }); }
     }
 
     // ── TIER 3: gallery-dl ───────────────────────────────────────────────────
@@ -866,11 +876,15 @@ export const getDownloadLink = async (
       try {
         const r = await getGalleryDlDownloadUrl(resolvedUrl, platform, signal);
         const vSafe = safeTunnelUrl(r.videoUrl);
-        return { success: true, source: "gallerydl", type: "tunnel",
-          data: { videoUrl: vSafe.url, audioUrl: null, tunnelAllowed: vSafe.tunnelAllowed,
-            filename: r.filename, title: r.title, thumbnail: r.thumbnail, type: "tunnel" } };
+        return {
+          success: true, source: "gallerydl", type: "tunnel",
+          data: {
+            videoUrl: vSafe.url, audioUrl: null, tunnelAllowed: vSafe.tunnelAllowed,
+            filename: r.filename, title: r.title, thumbnail: r.thumbnail, type: "tunnel"
+          }
+        };
       } catch (e: any) {
-        log("warn", "gallerydl", "Failed", { error: e.message?.slice(0,100) });
+        log("warn", "gallerydl", "Failed", { error: e.message?.slice(0, 100) });
         cbFailure("gallerydl");
       }
     }
@@ -878,16 +892,22 @@ export const getDownloadLink = async (
     // ── TIER 4: Playwright browser fallback ──────────────────────────────────
     try {
       log("info", "playwright", "Attempting browser extraction", { url: resolvedUrl.slice(0, 80) });
-      const r    = await extractWithPlaywright(resolvedUrl, platform, signal);
+      const r = await extractWithPlaywright(resolvedUrl, platform, signal);
       const safe = safeTunnelUrl(r.videoUrl);
-      return { success: true, source: "playwright", type: "tunnel",
-        data: { videoUrl: safe.url, audioUrl: null, tunnelAllowed: safe.tunnelAllowed,
-          title: r.title, thumbnail: r.thumbnail, type: "tunnel" } };
+      return {
+        success: true, source: "playwright", type: "tunnel",
+        data: {
+          videoUrl: safe.url, audioUrl: null, tunnelAllowed: safe.tunnelAllowed,
+          title: r.title, thumbnail: r.thumbnail, type: "tunnel"
+        }
+      };
     } catch (e: any) {
-      log("error", "playwright", "Browser extraction failed", { error: e.message?.slice(0,100) });
+      log("error", "playwright", "Browser extraction failed", { error: e.message?.slice(0, 100) });
       const c = classifyError(e?.message ?? "");
-      return { _error: true, statusCode: c.statusCode,
-        body: { success: false, message: c.message, platform, ...(IS_DEV && { debug: e?.message }) } };
+      return {
+        _error: true, statusCode: c.statusCode,
+        body: { success: false, message: c.message, platform, ...(IS_DEV && { debug: e?.message }) }
+      };
     }
   };
 
@@ -942,8 +962,8 @@ export const tunnel = async (req: FastifyRequest, reply: FastifyReply) => {
 
   const rangeHeader = (req.headers as any)["range"];
   const upstreamHeaders: Record<string, string> = {
-    "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept":          "*/*",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "*/*",
     "Accept-Encoding": "identity",
   };
   if (rangeHeader) upstreamHeaders["Range"] = rangeHeader;
@@ -957,17 +977,17 @@ export const tunnel = async (req: FastifyRequest, reply: FastifyReply) => {
       return reply.code(502).send({ success: false, message: `Upstream returned ${upstream.status}` });
     }
     reply.status(upstream.status);
-    const ct  = upstream.headers.get("content-type")   ?? guessMime(rawFilename ?? targetUrl);
-    const cl  = upstream.headers.get("content-length");
-    const cr  = upstream.headers.get("content-range");
-    const ar  = upstream.headers.get("accept-ranges");
-    reply.header("Content-Type",                ct);
-    reply.header("Accept-Ranges",               ar ?? "bytes");
-    reply.header("Cache-Control",               "no-store");
-    reply.header("X-Content-Type-Options",      "nosniff");
+    const ct = upstream.headers.get("content-type") ?? guessMime(rawFilename ?? targetUrl);
+    const cl = upstream.headers.get("content-length");
+    const cr = upstream.headers.get("content-range");
+    const ar = upstream.headers.get("accept-ranges");
+    reply.header("Content-Type", ct);
+    reply.header("Accept-Ranges", ar ?? "bytes");
+    reply.header("Cache-Control", "no-store");
+    reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Access-Control-Allow-Origin", "*");
     if (cl) reply.header("Content-Length", cl);
-    if (cr) reply.header("Content-Range",  cr);
+    if (cr) reply.header("Content-Range", cr);
     const filename = rawFilename ?? targetUrl.split("/").pop()?.split("?")[0] ?? "video.mp4";
     reply.header("Content-Disposition", `attachment; filename="${filename.replace(/[^\w.\-]/g, "_")}"`);
     return reply.send(upstream.body);
@@ -987,23 +1007,23 @@ export const healthCheck = async (_req: FastifyRequest, reply: FastifyReply) => 
 
   let ytdlpAgeDays: number | null = null;
   try {
-        const { stdout } = await execFilePromise("which", ["yt-dlp"], { encoding: "utf8" });
+    const { stdout } = await execFilePromise("which", ["yt-dlp"], { encoding: "utf8" });
     ytdlpAgeDays = parseFloat(((Date.now() - statSync((stdout as string).trim()).mtimeMs) / 86_400_000).toFixed(1));
   } catch { /* yt-dlp not found */ }
   return reply.code(200).send({
-    status:  "ok",
+    status: "ok",
     version: "v5",
-    uptime:  Math.round(process.uptime()),
+    uptime: Math.round(process.uptime()),
     circuits: Object.fromEntries(
       Object.entries(circuitBreakers).map(([k, v]) => [k, { open: v.openUntil > Date.now(), failures: v.failures }])
     ),
-    cobalt:   { reachable: cobaltReachable, ping: cobaltOk },
+    cobalt: { reachable: cobaltReachable, ping: cobaltOk },
     semaphore: { running: procSemaphore.runningCount, queued: procSemaphore.queueDepth, max: MAX_CONCURRENT_PROCS },
-    cache:    { backend: REDIS_URL ? "redis" : "memory", entries: cache.size() },
-    proxies:  proxyPool.stats(),
-    ytdlp:    { ageDays: ytdlpAgeDays, stale: ytdlpAgeDays !== null ? ytdlpAgeDays > YTDLP_MAX_AGE_DAYS : null },
+    cache: { backend: REDIS_URL ? "redis" : "memory", entries: cache.size() },
+    proxies: proxyPool.stats(),
+    ytdlp: { ageDays: ytdlpAgeDays, stale: ytdlpAgeDays !== null ? ytdlpAgeDays > YTDLP_MAX_AGE_DAYS : null },
     inFlight: inFlight.size,
-    memory:   { heapUsedMb: Math.round(process.memoryUsage().heapUsed / 1024 / 1024), heapTotalMb: Math.round(process.memoryUsage().heapTotal / 1024 / 1024) },
+    memory: { heapUsedMb: Math.round(process.memoryUsage().heapUsed / 1024 / 1024), heapTotalMb: Math.round(process.memoryUsage().heapTotal / 1024 / 1024) },
   });
 };
 

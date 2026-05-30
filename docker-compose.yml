@@ -115,7 +115,7 @@ services:
   # ── Watchtower — auto-updates images ─────────────────────────────────────────
   # Also auto-updates yt-dlp / gallery-dl via a post-update hook (see command)
   watchtower:
-    image: containrrr/watchtower
+    image: containrrr/watchtower:1.4.0
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

@@ -11,7 +11,7 @@ RUN npm prune --omit=dev
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM node:20-slim AS runtime
 
-# System deps
+# System deps + Playwright system deps (all as root)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
@@ -26,8 +26,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gallery-dl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Playwright deps
-RUN npx playwright install-deps chromium
+# Tell Playwright to use the system Chromium instead of downloading its own
+ENV PLAYWRIGHT_BROWSERS_PATH=/usr/bin
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
+ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 COPY --from=builder /app/dist         ./dist
@@ -42,13 +44,7 @@ RUN groupadd --gid 1001 nodeapp \
  && useradd --uid 1001 --gid nodeapp --shell /bin/bash --create-home nodeapp \
  && chown -R nodeapp:nodeapp /app
 
-ENV PLAYWRIGHT_BROWSERS_PATH=/home/nodeapp/.cache/ms-playwright
-ENV PYTHONUNBUFFERED=1
-
 USER nodeapp
-
-# Install Playwright browser as nodeapp user
-RUN npx playwright install chromium --with-deps
 
 EXPOSE 5000
 
