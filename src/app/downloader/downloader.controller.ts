@@ -539,11 +539,19 @@ async function getCobaltDownloadUrl(resolvedUrl: string, quality = "720", signal
   const timeoutSignal = AbortSignal.timeout(15_000);
   const fetchSignal = signal ? AbortSignal.any([timeoutSignal, signal]) : timeoutSignal;
 
-  const response = await fetch(`${COBALT_URL}/`, {
-    method: "POST", signal: fetchSignal,
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ url: resolvedUrl, videoQuality: q, filenameStyle: "classic", downloadMode: "auto", youtubeVideoCodec: "h264" }),
-  });
+const response = await fetch(`${COBALT_URL}/`, {
+  method: "POST", 
+  signal: fetchSignal,
+  headers: { "Content-Type": "application/json", "Accept": "application/json" },
+  body: JSON.stringify({ 
+    url: resolvedUrl, 
+    vQuality: q,   // ✅ FIXED: Changed from videoQuality to vQuality
+    filenameStyle: "classic", 
+    downloadMode: "auto", 
+    youtubeVideoCodec: "h264" 
+  }),
+});
+
   if (!response.ok) {
     // Only trip circuit breaker on systemic issues (429 rate limit, 500+ server errors)
     // Do NOT trip for 400/404 (user errors like invalid URLs)
