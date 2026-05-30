@@ -53,7 +53,6 @@ class ProxyPool {
       return sb - sa;
     })[0];
   }
-
   /** Pick by attempt index — each retry attempt gets a different proxy */
   pickByIndex(index: number): Proxy | null {
     if (!this.proxies.length) return null;
