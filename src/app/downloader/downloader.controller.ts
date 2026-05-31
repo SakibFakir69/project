@@ -554,7 +554,8 @@ interface CobaltResult {
 
 async function getCobaltDownloadUrl(
   resolvedUrl: string,
-  quality = "1080",
+  quality = "720",
+  platform: Platform,
   downloadMode: "auto" | "audio" | "mute" = "auto",
   signal?: AbortSignal,
 ): Promise<CobaltResult> {
@@ -572,17 +573,23 @@ async function getCobaltDownloadUrl(
     signal: fetchSignal,
     headers: {
       "Content-Type": "application/json",
-      "Accept":       "application/json",
+      "Accept": "application/json",
     },
     body: JSON.stringify({
-      url:               resolvedUrl,
-      videoQuality:      q,
-      filenameStyle:     "basic",
-      downloadMode:      downloadMode,
+      url: resolvedUrl,
+      videoQuality: q,
+      filenameStyle: "basic",
+      downloadMode: downloadMode,
       youtubeVideoCodec: "h264",
-      allowH265:         false,
-      alwaysProxy:       false,
-      tiktokFullAudio:   true,
+      allowH265: false,
+      // 🧠 SMART DYNAMIC PROXY:
+      // TikTok MUST use alwaysProxy: true (IP locking)
+      // YouTube prefers alwaysProxy: false (saves server resources, direct CDN)
+      alwaysProxy: platform === "tiktok",
+      // if need fix use yt + tik tok 
+
+      // Only apply TikTok audio flag if the platform is tiktok
+      tiktokFullAudio: platform === "tiktok" && downloadMode === "audio",
     }),
   });
 
@@ -606,10 +613,10 @@ async function getCobaltDownloadUrl(
     case "redirect":
       cbSuccess("cobalt");
       return {
-        url:      data.url!,
+        url: data.url!,
         audioUrl: null,
         filename: data.filename ?? "video.mp4",
-        type:     data.status,
+        type: data.status,
       };
 
     case "local-processing": {
@@ -617,10 +624,10 @@ async function getCobaltDownloadUrl(
       if (!tunnels.length) throw new Error("Cobalt local-processing: no tunnel URLs");
       cbSuccess("cobalt");
       return {
-        url:      tunnels[0],
+        url: tunnels[0],
         audioUrl: tunnels[1] ?? null,
         filename: data.output?.filename ?? "video.mp4",
-        type:     "local-processing",
+        type: "local-processing",
       };
     }
 
@@ -630,10 +637,10 @@ async function getCobaltDownloadUrl(
       const audioUrl = data.audio ?? data.picker?.find(p => p.type === "audio")?.url ?? null;
       cbSuccess("cobalt");
       return {
-        url:      vid.url,
+        url: vid.url,
         audioUrl: audioUrl,
         filename: data.audioFilename ?? data.filename ?? "video.mp4",
-        type:     "picker",
+        type: "picker",
       };
     }
 
@@ -941,7 +948,7 @@ export const getDownloadLink = async (
       // ───────────────────────────────────────────────────────────────────────
       try {
         log("info", "download", "Executing Tier 1 (Cobalt)", { url: resolvedUrl.slice(0, 80) });
-       const res = await getCobaltDownloadUrl(resolvedUrl, quality, "auto", clientDisconnectController.signal);
+         const res = await getCobaltDownloadUrl(resolvedUrl, quality, platform, "auto", clientDisconnectController.signal);
 
         const tunnelInfo = safeTunnelUrl(res.url);
         payload = {
