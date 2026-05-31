@@ -14,6 +14,7 @@ FROM node:20-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
+        python3-venv \
         python3-dev \
         gcc \
         g++ \
@@ -30,20 +31,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Upgrade pip toolchain first
-RUN pip3 install --break-system-packages --no-cache-dir --upgrade \
-    pip setuptools wheel
+# Create a virtualenv — avoids all Debian pip restriction issues
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
-# Install everything in ONE command so pip resolves compatibility together
-RUN pip3 install --break-system-packages --no-cache-dir --prefer-binary \
+# Upgrade pip inside venv
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Install all python tools inside venv together
+RUN pip install --no-cache-dir --prefer-binary \
     "yt-dlp" \
     "gallery-dl" \
     "curl_cffi>=0.7.0"
 
-# Verify curl_cffi is visible to yt-dlp
+# Verify at build time — build will FAIL if chrome is unavailable
 RUN python3 -c "import curl_cffi; print('curl_cffi OK:', curl_cffi.__version__)" && \
-    yt-dlp --list-impersonate-targets | grep -i chrome && \
-    echo "impersonate chrome OK"
+    yt-dlp --list-impersonate-targets | grep -i chrome | grep -iv unavailable && \
+    echo "✅ impersonate chrome CONFIRMED WORKING"
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/usr/bin
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
