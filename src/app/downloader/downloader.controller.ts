@@ -769,9 +769,11 @@ async function getGalleryDlDownloadUrl(
   if (cbIsOpen("gallerydl")) throw new Error("[CB] gallery-dl circuit open");
 
   const ctx  = buildAttemptContext(url, platform, 0, signal);
+
   const args = buildGalleryDlArgs(url, platform, ctx, [
-    "--dump-json", "--no-download", "--no-part", "--timeout", "30", "--retries", "3",
-  ]);
+  "--dump-json", "--no-download", "--no-part", "--retries", "3",
+]);
+
 
   const { stdout } = await withSemaphore(async () => {
     if (signal?.aborted) throw new Error("Request aborted");

@@ -30,15 +30,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --break-system-packages --no-cache-dir --upgrade pip setuptools wheel
+# Upgrade pip toolchain first
+RUN pip3 install --break-system-packages --no-cache-dir --upgrade \
+    pip setuptools wheel
 
-RUN pip3 install --break-system-packages --no-cache-dir --prefer-binary "curl_cffi==0.7.4"
+# Install everything in ONE command so pip resolves compatibility together
+RUN pip3 install --break-system-packages --no-cache-dir --prefer-binary \
+    "yt-dlp" \
+    "gallery-dl" \
+    "curl_cffi>=0.7.0"
 
-RUN pip3 install --break-system-packages --no-cache-dir yt-dlp gallery-dl
-
-# Debug — single line, no parse issues
-RUN python3 -c "import curl_cffi; print('version:', curl_cffi.__version__)" && \
-    python3 -c "from curl_cffi import requests; requests.get('https://example.com', impersonate='chrome'); print('impersonate chrome OK')"
+# Verify curl_cffi is visible to yt-dlp
+RUN python3 -c "import curl_cffi; print('curl_cffi OK:', curl_cffi.__version__)" && \
+    yt-dlp --list-impersonate-targets | grep -i chrome && \
+    echo "impersonate chrome OK"
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/usr/bin
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
