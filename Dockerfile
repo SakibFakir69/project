@@ -17,28 +17,43 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-dev \
         gcc \
         g++ \
+        make \
         ffmpeg \
         curl \
         wget \
         ca-certificates \
         chromium \
         chromium-driver \
-        # Required for curl_cffi TLS impersonation
         libssl-dev \
         libcurl4-openssl-dev \
+        libnss3 \
+        libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Force reinstall curl_cffi with binary wheel from PyPI (not compiled from source)
-RUN pip3 install --break-system-packages --no-cache-dir --upgrade pip \
-    && pip3 install --break-system-packages --no-cache-dir \
-        --only-binary=:all: \
-        "curl_cffi==0.7.4" \
-    && pip3 install --break-system-packages --no-cache-dir \
-        yt-dlp \
-        gallery-dl
+# Upgrade pip first
+RUN pip3 install --break-system-packages --no-cache-dir --upgrade pip setuptools wheel
 
-# Verify — build fails if Chrome is still unavailable
-RUN python3 -c "from curl_cffi import requests; r = requests.get('https://example.com', impersonate='chrome'); print('curl_cffi impersonate OK')"
+# Install curl_cffi — try binary wheel first, fall back to source
+RUN pip3 install --break-system-packages --no-cache-dir \
+        --prefer-binary \
+        "curl_cffi==0.7.4" \
+    || pip3 install --break-system-packages --no-cache-dir \
+        "curl_cffi==0.7.4"
+
+# Install yt-dlp and gallery-dl
+RUN pip3 install --break-system-packages --no-cache-dir yt-dlp gallery-dl
+
+# Debug — show exactly what curl_cffi sees
+RUN python3 -c "
+import curl_cffi
+print('version:', curl_cffi.__version__)
+try:
+    from curl_cffi import requests
+    r = requests.get('https://example.com', impersonate='chrome')
+    print('impersonate chrome: OK')
+except Exception as e:
+    print('impersonate chrome: FAILED —', e)
+"
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/usr/bin
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
