@@ -1,5 +1,5 @@
 /**
- * download.controller.ts — v6
+ * download.controller.ts — v6.1 (TikTok / Short URL Fix)
  */
 
 import { execFile } from "node:child_process";
@@ -388,23 +388,38 @@ function dedupe<T>(key: string, fn: () => Promise<T>): Promise<T> {
 }
 
 // ── Short URL resolver ────────────────────────────────────────────────────────
+// 🔴 FIX: Removed `Range: bytes=0-0` which tricked CDNs into returning raw video streams 
+// instead of the HTML page, breaking all extractors. Now uses GET and immediately cancels 
+// the body download after getting the redirect URL.
 
 async function resolveRedirectUrl(url: string): Promise<string> {
+  const isShort = /vt\.tiktok|vm\.tiktok|pin\.it|fb\.watch|redd\.it|youtu\.be|t\.co/i.test(url);
+  if (!isShort && !url.includes('/share/')) return url;
+
   try {
     const res = await fetch(url, {
-      method: "GET", redirect: "follow", signal: AbortSignal.timeout(8_000),
+      method: "GET",
+      redirect: "follow",
+      signal: AbortSignal.timeout(8_000),
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Range": "bytes=0-0",
+        // Mobile UA is crucial for TikTok/Instagram short links to redirect properly
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
       },
     });
-    let resolved = res.url || url;
-    if ((resolved.includes("tiktok.com") || resolved.includes("instagram.com")) && resolved.includes("?"))
-      resolved = resolved.split("?")[0];
+    
+    // Cancel the body stream to prevent downloading the actual page/video file
+    // We only care about the final redirected URL
+    res.body?.cancel();
+
+    const resolved = res.url || url;
     if (resolved !== url)
       log("debug", "resolver", "Resolved redirect", { from: url.slice(0, 80), to: resolved.slice(0, 120) });
+    
+    // 🔴 FIX: DO NOT strip query parameters. Extractors need them for signature validation.
     return resolved;
-  } catch { return url; }
+  } catch {
+    return url;
+  }
 }
 
 // ── Attempt context builder ───────────────────────────────────────────────────
@@ -474,7 +489,7 @@ function buildGalleryDlArgs(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TIER 1: Cobalt  ← NOW USES PROXY
+// TIER 1: Cobalt
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface CobaltApiResponse {
@@ -512,7 +527,6 @@ async function getCobaltDownloadUrl(
   const videoQuality = validQ.includes(q) ? q : "1080";
   const isTikTok = platform === "tiktok";
 
-  // ── FIX: pick a proxy for Cobalt too ─────────────────────────────────────
   const cobaltProxy = proxyPool.pick(platform) ?? proxyPool.pick();
 
   const timeoutSignal = AbortSignal.timeout(25_000);
@@ -529,14 +543,11 @@ async function getCobaltDownloadUrl(
     tiktokFullAudio:   isTikTok && downloadMode === "audio",
   };
 
-  // Use proxy env flag OR pass proxy url if available
   if (process.env.COBALT_PROXY_ENABLED === "true") {
+    console.log("COBALT_PROXY_ENABLED", process.env.COBALT_PROXY_ENABLED)
     body.alwaysProxy = true;
   }
 
-  // ── Build fetch options with proxy if available ───────────────────────────
-  // Cobalt is an HTTP API so we pass proxy via env or a dispatcher
-  // Log which proxy is being used for Cobalt
   if (cobaltProxy) {
     log("debug", "cobalt", "Using proxy for request", {
       proxy:    cobaltProxy.url.replace(/:[^@]+@/, ":***@"),
@@ -544,14 +555,14 @@ async function getCobaltDownloadUrl(
     });
   }
 
+  // 🔴 FIX: Removed "X-Proxy-Url" header. Cobalt API does not support custom proxy 
+  // headers and will reject unknown headers with a 400 Bad Request on strict instances.
   const response = await fetch(`${COBALT_URL}/`, {
     method:  "POST",
     signal:  fetchSignal,
     headers: {
       "Content-Type": "application/json",
       "Accept":       "application/json",
-      // Pass proxy hint to Cobalt so it uses it on its side
-      ...(cobaltProxy ? { "X-Proxy-Url": cobaltProxy.url } : {}),
     },
     body: JSON.stringify(body),
   });
@@ -568,14 +579,12 @@ async function getCobaltDownloadUrl(
       body:     JSON.stringify(body).slice(0, 200),
     });
 
-    // ── FIX: mark proxy as failed on Cobalt error too ─────────────────────
     if (cobaltProxy) proxyPool.failure(cobaltProxy, platform, response.status === 429);
     if (response.status === 429 || response.status >= 500) cbFailure("cobalt");
 
     throw new Error(`Cobalt ${response.status}: ${err?.error?.code || err || "unknown_error"}`);
   }
 
-  // Mark proxy as successful
   if (cobaltProxy) proxyPool.success(cobaltProxy);
 
   const data: CobaltApiResponse = await response.json();
@@ -642,7 +651,7 @@ async function getYtDlpWithMutation(
 
     log("info", "ytdlp", `Attempt ${attempt + 1}/${adapter.maxAttempts}`, {
       client:   ctx.identity.clientName,
-      proxy:    ctx.proxy ? ctx.proxy.url.replace(/:[^@]+@/, ":***@") : "none", // FIX: log actual proxy
+      proxy:    ctx.proxy ? ctx.proxy.url.replace(/:[^@]+@/, ":***@") : "none",
       cookie:   ctx.cookiePath ? "yes" : "no",
       strategy: strategy.slice(0, 50),
     });
@@ -685,7 +694,6 @@ async function getYtDlpWithMutation(
 
       if (!videoUrl) throw new Error("yt-dlp: no video URL in output");
 
-      // ── FIX: removed dead `const proxy = proxyPool.pickByIndex(attempt)` ──
       if (ctx.proxy)     proxyPool.success(ctx.proxy);
       if (ctx.cookiePath) cookieManager.markSuccess(platform as any, ctx.cookiePath);
 
@@ -704,7 +712,6 @@ async function getYtDlpWithMutation(
       lastErr = err;
       const c = classifyError(err?.stderr ?? err?.message ?? "");
 
-      // ── FIX: removed dead `const proxy = proxyPool.pickByIndex(attempt)` ──
       if (ctx.proxy) proxyPool.failure(ctx.proxy, platform, c.category === "rate_limit");
       if (ctx.cookiePath) cookieManager.markFailed(platform as any, ctx.cookiePath);
 
@@ -746,7 +753,7 @@ async function getYtDlpInfo(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TIER 3: gallery-dl  ← NOW RESPECTS adapter.useGalleryDl
+// TIER 3: gallery-dl
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface GalleryDlResult {
@@ -901,7 +908,6 @@ export const getDownloadLink = async (
       if (clientDisconnectController.signal.aborted)
         throw new Error("Aborted before pipeline start");
 
-      // ── TIER 1: Cobalt ──────────────────────────────────────────────────
       const adapter = getAdapter(platform);
 
       if (adapter.useCobalt) {
@@ -927,7 +933,6 @@ export const getDownloadLink = async (
         }
       }
 
-      // ── TIER 2: yt-dlp ──────────────────────────────────────────────────
       if (!payload) {
         try {
           log("info", "download", "Tier 2 (yt-dlp)", { url: resolvedUrl.slice(0, 80) });
@@ -952,7 +957,6 @@ export const getDownloadLink = async (
         }
       }
 
-      // ── TIER 3: gallery-dl  ← FIX: uses adapter.useGalleryDl flag ───────
       if (!payload && adapter.useGalleryDl) {
         try {
           log("info", "download", "Tier 3 (gallery-dl)", { url: resolvedUrl.slice(0, 80) });
@@ -976,7 +980,6 @@ export const getDownloadLink = async (
         }
       }
 
-      // ── TIER 4: Playwright ───────────────────────────────────────────────
       if (!payload) {
         try {
           log("info", "download", "Tier 4 (Playwright)", { url: resolvedUrl.slice(0, 80) });
@@ -1129,7 +1132,7 @@ export const healthCheck = async (_req: FastifyRequest, reply: FastifyReply) => 
 
   return reply.code(200).send({
     status:    "ok",
-    version:   "v6",
+    version:   "v6.1",
     uptime:    Math.round(process.uptime()),
     circuits:  Object.fromEntries(
       Object.entries(circuitBreakers).map(([k, v]) => [k, { open: v.openUntil > Date.now(), failures: v.failures }])
