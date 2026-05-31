@@ -1,33 +1,16 @@
 # docker-compose.yml  —  Production-hardened video downloader stack
-# Services:  app  |  cobalt-api  |  watchtower
-# gallery-dl is installed INSIDE the app image (see Dockerfile notes below)
-#
-# ── DOCKERFILE CHANGE REQUIRED ───────────────────────────────────────────────
-# Add to your Dockerfile (after Node install):
-#
-#   RUN apt-get update && apt-get install -y python3 python3-pip ffmpeg \
-#       && pip3 install --break-system-packages yt-dlp gallery-dl \
-#       && rm -rf /var/lib/apt/lists/*
-#
-#   # Keep yt-dlp & gallery-dl fresh on every container start (optional cron):
-#   RUN echo "0 4 * * * root pip3 install --break-system-packages -U yt-dlp gallery-dl" \
-#       >> /etc/crontab
-# ─────────────────────────────────────────────────────────────────────────────
 
 version: "3.9"
 
-# ── Shared network ────────────────────────────────────────────────────────────
 networks:
   internal:
     driver: bridge
 
-# ── Named volumes ─────────────────────────────────────────────────────────────
 volumes:
   cobalt_tmp: {}
 
 services:
 
-  # ── Main API app ─────────────────────────────────────────────────────────────
   app:
     build:
       context: .
@@ -59,7 +42,6 @@ services:
       timeout:  10s
       retries:  3
       start_period: 20s
-    # Tighten file-descriptor limits (each yt-dlp/gallery-dl process opens sockets)
     ulimits:
       nofile:
         soft: 65536
@@ -70,27 +52,24 @@ services:
         max-size: "50m"
         max-file: "5"
 
-  # ── Cobalt API ────────────────────────────────────────────────────────────────
   cobalt-api:
     image: ghcr.io/imputnet/cobalt:latest
     restart: unless-stopped
-    # Do NOT expose 9000 to the public — only app needs it
     expose:
       - "9000"
     networks:
       - internal
     environment:
-      API_URL:              "https://downtubebest.duckdns.org"
-      CORS_WILDCARD:        "1"
-      RATE_LIMIT_MAX:       "200"       # bumped for million-user scale
-      RATE_LIMIT_WINDOW:    "60"
-      DURATION_LIMIT:       "10800"
-      COOKIE_PATH:          "/cookies.json"
-      # Use your rotating proxy — prevents YouTube/TikTok IP bans
-      API_EXTERNAL_PROXY:   "${COBALT_PROXY:-http://ypadwxjb-rotate:fxazhyr9knac@p.webshare.io:80}"
+      API_URL:            "https://downtubebest.duckdns.org"
+      CORS_WILDCARD:      "1"
+      RATE_LIMIT_MAX:     "200"
+      RATE_LIMIT_WINDOW:  "60"
+      DURATION_LIMIT:     "10800"
+      COOKIE_PATH:        "/cookies.json"
+      API_EXTERNAL_PROXY: "${COBALT_PROXY}"
     volumes:
-      - ./cookies.json:/cookies.json:ro    # read-only — never let cobalt write cookies
-      - cobalt_tmp:/tmp/cobalt             # ephemeral working space
+      - ./cookies.json:/cookies.json:ro
+      - cobalt_tmp:/tmp/cobalt
     deploy:
       resources:
         limits:
@@ -100,7 +79,6 @@ services:
           cpus:   "0.25"
           memory: "256M"
     healthcheck:
-      # Cobalt exposes a /api/serverInfo endpoint (or falls back to /)
       test:     ["CMD", "wget", "--spider", "-q", "http://localhost:9000/"]
       interval: 20s
       timeout:  8s
@@ -112,8 +90,6 @@ services:
         max-size: "30m"
         max-file: "3"
 
-  # ── Watchtower — auto-updates images ─────────────────────────────────────────
-  # Also auto-updates yt-dlp / gallery-dl via a post-update hook (see command)
   watchtower:
     image: containrrr/watchtower:1.4.0
     restart: unless-stopped
