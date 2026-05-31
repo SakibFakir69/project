@@ -1,6 +1,4 @@
-
 import { BaseAdapter, type AttemptContext } from "./Base.adapter.js";
-
 
 export class GenericAdapter extends BaseAdapter {
   readonly platform       = "generic";
@@ -9,7 +7,19 @@ export class GenericAdapter extends BaseAdapter {
   useCobalt               = false;
   useGalleryDl            = true;
 
-  ytdlpPlatformArgs(_ctx: AttemptContext): string[] {
-    return [];
+  formatStrategies = [
+    "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]",
+    "bestvideo+bestaudio/best",
+    "best[ext=mp4]/best",
+  ];
+
+  ytdlpPlatformArgs(ctx: AttemptContext): string[] {
+    const impersonateTargets = ["chrome", "chrome-116", "safari"];
+    const impersonate = impersonateTargets[ctx.attemptIndex % impersonateTargets.length];
+
+    return [
+      "--impersonate", impersonate,
+      "--add-header",  "Accept-Encoding:identity",
+    ];
   }
 }

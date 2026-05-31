@@ -1,26 +1,28 @@
-// import { BaseAdapter, type AttemptContext } from "./base.adapter.js";
-
 import { BaseAdapter, type AttemptContext } from "./Base.adapter.js";
-
-
-
 
 export class FacebookAdapter extends BaseAdapter {
   readonly platform       = "facebook";
   readonly cookiePlatform = "facebook" as const;
-  maxAttempts             = 3;
+  maxAttempts             = 4;
   useCobalt               = true;
   useGalleryDl            = false;
 
   formatStrategies = [
-    "best[ext=mp4]/best",
+    "best[ext=mp4][height<=1080]/best[ext=mp4]",
+    "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]",
     "bestvideo+bestaudio/best",
     "best",
   ];
 
   ytdlpPlatformArgs(ctx: AttemptContext): string[] {
-    const args = ["--no-check-certificate"];
-    if (ctx.cookiePath) args.push("--cookies", ctx.cookiePath);
-    return args;
+    const impersonateTargets = ["chrome", "chrome-116", "chrome-120", "edge"];
+    const impersonate = impersonateTargets[ctx.attemptIndex % impersonateTargets.length];
+
+    return [
+      "--impersonate",    impersonate,
+      "--add-header",     "Referer:https://www.facebook.com/",
+      "--add-header",     "Accept-Encoding:identity",
+      "--socket-timeout", "45",
+    ];
   }
 }

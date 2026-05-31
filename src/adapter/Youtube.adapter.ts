@@ -1,6 +1,4 @@
-
 import { BaseAdapter, type AttemptContext } from "./Base.adapter.js";
-
 
 export class YouTubeAdapter extends BaseAdapter {
   readonly platform       = "youtube";
@@ -14,6 +12,7 @@ export class YouTubeAdapter extends BaseAdapter {
     "bestvideo[height<=720]+bestaudio/best[height<=720]",
     "best[ext=mp4]/best[ext=webm]/best",
     "bestvideo+bestaudio/best",
+    "best",
   ];
 
   ytdlpPlatformArgs(ctx: AttemptContext): string[] {
@@ -25,9 +24,11 @@ export class YouTubeAdapter extends BaseAdapter {
       "android_vr,android",
     ];
     const client = clients[ctx.attemptIndex % clients.length];
+
     return [
       "--extractor-args", `youtube:player_client=${client}`,
       "--extractor-args", "youtube:skip=dash",
+      "--add-header",     "Referer:https://www.youtube.com/",
     ];
   }
 }

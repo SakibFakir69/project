@@ -1,7 +1,4 @@
-
 import { BaseAdapter, type AttemptContext } from "./Base.adapter.js";
-
-
 
 export class InstagramAdapter extends BaseAdapter {
   readonly platform       = "instagram";
@@ -11,19 +8,22 @@ export class InstagramAdapter extends BaseAdapter {
   useGalleryDl            = true;
 
   formatStrategies = [
-    "best[ext=mp4]/best",
+    "best[ext=mp4][height<=1080]/best[ext=mp4]",
+    "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]",
     "bestvideo+bestaudio/best",
     "best",
-    "worst",
   ];
 
   ytdlpPlatformArgs(ctx: AttemptContext): string[] {
-    const args = ["--socket-timeout", "45"];
-    // Instagram needs cookies on every attempt
-    if (ctx.cookiePath) {
-      args.push("--cookies", ctx.cookiePath);
-    }
-    return args;
+    const impersonateTargets = ["chrome", "chrome-120", "safari", "chrome-116"];
+    const impersonate = impersonateTargets[ctx.attemptIndex % impersonateTargets.length];
+
+    return [
+      "--impersonate",    impersonate,
+      "--add-header",     "Referer:https://www.instagram.com/",
+      "--add-header",     "Accept-Encoding:identity",
+      "--socket-timeout", "45",
+    ];
   }
 
   galleryDlPlatformArgs(_ctx: AttemptContext): string[] {

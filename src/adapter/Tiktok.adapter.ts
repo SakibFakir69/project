@@ -22,20 +22,14 @@ export class TikTokAdapter extends BaseAdapter {
     ];
     const host = apiHosts[ctx.attemptIndex % apiHosts.length];
 
-    // Impersonate target rotates per attempt for better success rate
-    const impersonateTargets = [
-      "chrome",
-      "chrome-116",
-      "chrome-120",
-      "safari",
-    ];
+    const impersonateTargets = ["chrome", "chrome-116", "chrome-120", "safari"];
     const impersonate = impersonateTargets[ctx.attemptIndex % impersonateTargets.length];
 
     return [
-      "--impersonate",    impersonate,                        // ← ADDED
+      "--impersonate",    impersonate,
       "--extractor-args", `tiktok:api_hostname=${host}`,
       "--add-header",     "Accept-Encoding:identity",
-      "--add-header",     "Referer:https://www.tiktok.com/", // ← ADDED
+      "--add-header",     "Referer:https://www.tiktok.com/",
     ];
   }
 
