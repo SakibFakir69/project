@@ -569,83 +569,64 @@ async function getCobaltDownloadUrl(
   if (!cobaltReachable) throw new Error("[Cobalt] Unreachable");
   if (cbIsOpen("cobalt")) throw new Error("[CB] Cobalt circuit open");
 
-  // ─────────────────────────────
-  // 1. CLEAN URL (CRITICAL FIX)
-  // ─────────────────────────────
+  // ───────── CLEAN URL ─────────
   try {
     resolvedUrl = decodeURIComponent(resolvedUrl).trim();
-  } catch { }
+  } catch {}
 
   if (!/^https?:\/\//i.test(resolvedUrl)) {
     throw new Error("Invalid URL");
   }
 
-  // ─────────────────────────────
-  // 2. QUALITY FIX (STRICT)
-  // ─────────────────────────────
-  const validQ = ["max", "4320", "2160", "1440", "1080", "720", "480", "360", "240", "144"];
+  // ───────── QUALITY ─────────
+  const validQ = ["max","4320","2160","1440","1080","720","480","360","240","144"];
   const videoQuality = validQ.includes(quality.replace("p", ""))
     ? quality.replace("p", "")
     : "1080";
 
-  // ─────────────────────────────
-  // 3. PLATFORM SAFE FLAGS (IMPORTANT FIX)
-  // ─────────────────────────────
   const isHeavyProxy =
     platform === "tiktok" ||
     platform === "instagram" ||
     platform === "facebook";
 
-  const isYouTube = platform === "youtube";
-
-  // ─────────────────────────────
-  // 4. TIMEOUT
-  // ─────────────────────────────
-  const timeoutSignal = AbortSignal.timeout(20_000);
+  // ───────── TIMEOUT ─────────
+  const timeoutSignal = AbortSignal.timeout(20000);
   const fetchSignal = signal
     ? AbortSignal.any([timeoutSignal, signal])
     : timeoutSignal;
 
-  // ─────────────────────────────
-  // 5. FINAL REQUEST BODY (CLEAN + SAFE)
-  // ─────────────────────────────
-  const body = {
+  // ───────── MINIMAL SAFE BODY (IMPORTANT FIX) ─────────
+  const body: any = {
     url: resolvedUrl,
-
     videoQuality,
-
     downloadMode,
-
     filenameStyle: "basic",
-
-    // audio config
-    audioFormat: downloadMode === "audio" ? "mp3" : "mp3",
-    audioBitrate: "128",
-
-    // YouTube stability fix
-    youtubeVideoCodec: isYouTube ? "h264" : "h264",
-    youtubeVideoContainer: "mp4",
-
-    youtubeHLS: false,
-    youtubeBetterAudio: true,
-
-    // TikTok fix (IMPORTANT)
-    allowH265: false,
-    tiktokFullAudio: platform === "tiktok" && downloadMode === "audio",
-
-    // 🔥 KEY FIX FOR 400 ERROR
-    alwaysProxy: isHeavyProxy,
-
-    // fallback stability
-    localProcessing: "preferred",
-
-    disableMetadata: false,
-    convertGif: true,
   };
 
-  // ─────────────────────────────
-  // 6. REQUEST
-  // ─────────────────────────────
+  // ONLY ADD WHAT IS SAFE
+
+  if (downloadMode === "audio") {
+    body.audioFormat = "mp3";
+    body.audioBitrate = "128";
+  }
+
+  // platform-specific safe flags
+  if (platform === "tiktok") {
+    body.tiktokFullAudio = true;
+    body.allowH265 = false;
+    body.alwaysProxy = true;
+  }
+
+  if (platform === "instagram" || platform === "facebook") {
+    body.alwaysProxy = true;
+  }
+
+  // optional safe proxy for youtube only if needed
+  if (platform === "youtube") {
+    body.alwaysProxy = false;
+  }
+
+  // ───────── REQUEST ─────────
   const response = await fetch(`${COBALT_URL}/`, {
     method: "POST",
     signal: fetchSignal,
@@ -656,38 +637,24 @@ async function getCobaltDownloadUrl(
     body: JSON.stringify(body),
   });
 
-  // ─────────────────────────────
-  // 7. ERROR HANDLING (FIXED)
-  // ─────────────────────────────
+  // ───────── ERROR HANDLING ─────────
   if (!response.ok) {
-    let errText: any = null;
-
-    try {
-      errText = await response.json();
-    } catch {
-      errText = await response.text();
-    }
+    const err = await response.text().catch(() => "");
 
     log("warn", "cobalt", "request_failed", {
       status: response.status,
-      error: errText,
+      error: err,
       platform,
-      url: resolvedUrl.slice(0, 80),
     });
 
     if (response.status === 429 || response.status >= 500) {
       cbFailure("cobalt");
     }
 
-    throw new Error(
-      `Cobalt ${response.status}: ${errText?.error?.code || errText || "unknown_error"
-      }`
-    );
+    throw new Error(`Cobalt ${response.status}: ${err}`);
   }
 
-  // ─────────────────────────────
-  // 8. PARSE RESPONSE
-  // ─────────────────────────────
+  // ───────── RESPONSE ─────────
   const data: CobaltApiResponse = await response.json();
 
   switch (data.status) {
@@ -702,15 +669,6 @@ async function getCobaltDownloadUrl(
         type: data.status,
       };
 
-    case "local-processing":
-      cbSuccess("cobalt");
-      return {
-        url: data.tunnel?.[0] ?? "",
-        audioUrl: data.tunnel?.[1] ?? null,
-        filename: data.output?.filename ?? "video.mp4",
-        type: "local-processing",
-      };
-
     case "picker":
       cbSuccess("cobalt");
       const vid = data.picker?.find(p => p.type === "video") ?? data.picker?.[0];
@@ -718,8 +676,17 @@ async function getCobaltDownloadUrl(
       return {
         url: vid?.url ?? "",
         audioUrl: data.audio ?? null,
-        filename: data.audioFilename ?? "video.mp4",
+        filename: data.filename ?? "video.mp4",
         type: "picker",
+      };
+
+    case "local-processing":
+      cbSuccess("cobalt");
+      return {
+        url: data.tunnel?.[0] ?? "",
+        audioUrl: data.tunnel?.[1] ?? null,
+        filename: data.output?.filename ?? "video.mp4",
+        type: "local-processing",
       };
 
     case "error":
