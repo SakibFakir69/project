@@ -95,13 +95,7 @@ interface YtDlpMeta {
   ext?: string;
 }
 
-interface CobaltApiResponse {
-  status: "tunnel" | "redirect" | "picker" | "error";
-  url?: string;
-  filename?: string;
-  picker?: Array<{ type: string; url: string }>;
-  error?: { code: string };
-}
+
 
 // ── Structured JSON logger ────────────────────────────────────────────────────
 
@@ -526,9 +520,44 @@ function buildGalleryDlArgs(url: string, platform: Platform, ctx: AttemptContext
 // TIER 1: Cobalt
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface CobaltResult { url: string; audioUrl: string | null; filename: string; type: string; }
 
-async function getCobaltDownloadUrl(resolvedUrl: string, quality = "1080", signal?: AbortSignal): Promise<CobaltResult> {
+
+// ── Updated Interfaces based on official API docs ────────────────────────────
+// ── Interfaces ────────────────────────────────────────────────────────────────
+interface CobaltApiResponse {
+  status?: "tunnel" | "redirect" | "picker" | "error" | "local-processing";
+  url?: string;
+  filename?: string;
+  audio?: string;
+  audioFilename?: string;
+  picker?: Array<{ type: string; url: string; thumb?: string }>;
+  type?: string;
+  service?: string;
+  tunnel?: string[];
+  output?: { filename: string; type: string; metadata?: Record<string, string> };
+  isHLS?: boolean;
+  error?: {
+    code: string;
+    context?: {
+      service?: string;
+      limit?: number;
+    };
+  };
+}
+
+interface CobaltResult {
+  url: string;
+  audioUrl: string | null;
+  filename: string;
+  type: string;
+}
+
+async function getCobaltDownloadUrl(
+  resolvedUrl: string,
+  quality = "1080",
+  downloadMode: "auto" | "audio" | "mute" = "auto",
+  signal?: AbortSignal,
+): Promise<CobaltResult> {
   if (!cobaltReachable) throw new Error("[Cobalt] Unreachable");
   if (cbIsOpen("cobalt")) throw new Error("[CB] Cobalt circuit open");
 
@@ -541,46 +570,82 @@ async function getCobaltDownloadUrl(resolvedUrl: string, quality = "1080", signa
   const response = await fetch(`${COBALT_URL}/`, {
     method: "POST",
     signal: fetchSignal,
-    headers: { 
-      "Content-Type": "application/json", 
-      "Accept": "application/json",
+    headers: {
+      "Content-Type": "application/json",
+      "Accept":       "application/json",
     },
     body: JSON.stringify({
       url:               resolvedUrl,
       videoQuality:      q,
       filenameStyle:     "basic",
-      downloadMode:      "auto",
+      downloadMode:      downloadMode,
       youtubeVideoCodec: "h264",
       allowH265:         false,
       alwaysProxy:       false,
+      tiktokFullAudio:   true,
     }),
   });
 
   if (!response.ok) {
+    const errBody = await response.text().catch(() => "");
+    log("warn", "cobalt", `HTTP ${response.status}`, {
+      body: errBody.slice(0, 200),
+      url: resolvedUrl.slice(0, 80),
+    });
     if (response.status === 429 || response.status >= 500) {
       cbFailure("cobalt");
     }
-    throw new Error(`Cobalt HTTP ${response.status}`);
+    throw new Error(`Cobalt HTTP ${response.status}: ${errBody.slice(0, 100)}`);
   }
 
   const data: CobaltApiResponse = await response.json();
+  log("debug", "cobalt", `Status: ${data.status}`, { url: resolvedUrl.slice(0, 80) });
+
   switch (data.status) {
     case "tunnel":
     case "redirect":
       cbSuccess("cobalt");
-      return { url: data.url!, audioUrl: null, filename: data.filename ?? "video.mp4", type: data.status };
+      return {
+        url:      data.url!,
+        audioUrl: null,
+        filename: data.filename ?? "video.mp4",
+        type:     data.status,
+      };
+
+    case "local-processing": {
+      const tunnels = data.tunnel ?? [];
+      if (!tunnels.length) throw new Error("Cobalt local-processing: no tunnel URLs");
+      cbSuccess("cobalt");
+      return {
+        url:      tunnels[0],
+        audioUrl: tunnels[1] ?? null,
+        filename: data.output?.filename ?? "video.mp4",
+        type:     "local-processing",
+      };
+    }
+
     case "picker": {
       const vid = data.picker?.find(p => p.type === "video") ?? data.picker?.[0];
-      const aud = data.picker?.find(p => p.type === "audio") ?? null;
+      if (!vid) throw new Error("Cobalt picker: no video entry found");
+      const audioUrl = data.audio ?? data.picker?.find(p => p.type === "audio")?.url ?? null;
       cbSuccess("cobalt");
-      return { url: vid!.url, audioUrl: aud?.url ?? null, filename: data.filename ?? "video.mp4", type: "picker" };
+      return {
+        url:      vid.url,
+        audioUrl: audioUrl,
+        filename: data.audioFilename ?? data.filename ?? "video.mp4",
+        type:     "picker",
+      };
     }
-    case "error":
+
+    case "error": {
       cbFailure("cobalt");
-      throw new Error(`Cobalt error: ${data.error?.code}`);
+      const ctx = data.error?.context ? ` (${JSON.stringify(data.error.context)})` : "";
+      throw new Error(`Cobalt error: ${data.error?.code}${ctx}`);
+    }
+
     default:
       cbFailure("cobalt");
-      throw new Error(`Unknown Cobalt status: ${data.status}`);
+      throw new Error(`Unknown Cobalt status: ${(data as any).status}`);
   }
 }
 
@@ -876,7 +941,7 @@ export const getDownloadLink = async (
       // ───────────────────────────────────────────────────────────────────────
       try {
         log("info", "download", "Executing Tier 1 (Cobalt)", { url: resolvedUrl.slice(0, 80) });
-        const res = await getCobaltDownloadUrl(resolvedUrl, quality, clientDisconnectController.signal);
+       const res = await getCobaltDownloadUrl(resolvedUrl, quality, "auto", clientDisconnectController.signal);
 
         const tunnelInfo = safeTunnelUrl(res.url);
         payload = {
