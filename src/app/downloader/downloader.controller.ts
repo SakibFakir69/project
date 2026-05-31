@@ -456,12 +456,18 @@ function buildAttemptContext(
   attemptIndex: number,
   signal?: AbortSignal,
 ): AttemptContext {
-  // FIX: Pass platform to pickByIndex so it skips proxies temporarily banned for this platform
+
   const proxy = proxyPool.pickByIndex(attemptIndex, platform);
   const cookie = cookieManager.byIndex(platform as any, attemptIndex);
   const identity = identityManager.forAttempt(attemptIndex);
 
-  return { attemptIndex, proxy: proxy?.url ?? null, cookiePath: cookie, identity, signal };
+  return {
+    attemptIndex,
+    proxy,
+    cookiePath: cookie,
+    identity,
+    signal,
+  };
 }
 
 // ── yt-dlp arg builder (uses adapter + mutation context) ─────────────────────
@@ -484,7 +490,7 @@ function buildYtDlpArgs(
     "--add-header", `User-Agent:${ctx.identity.userAgent}`,
     ...identityManager.ytdlpHeaderArgs(ctx.identity),
     // FIX 3: Use proxy directly from context instead of re-fetching it
-    ...proxyPool.ytdlpArgs({ url: ctx.proxy } as any),
+    ...proxyPool.ytdlpArgs(ctx.proxy),
     // Platform-specific args from adapter
     ...adapter.ytdlpPlatformArgs(ctx),
     ...(referer ? ["--add-header", `Referer:${referer}`] : []),
@@ -503,8 +509,8 @@ function buildYtDlpArgs(
 
 function buildGalleryDlArgs(url: string, platform: Platform, ctx: AttemptContext, extra: string[]): string[] {
   const adapter = getAdapter(platform);
-  const proxy = proxyPool.pickByIndex(ctx.attemptIndex);
-  const proxyStr = proxy?.url ?? null;
+
+  const proxyStr = ctx.proxy?.url ?? null;
 
   return [
     "--no-mtime", "--filename", "{id}.{extension}",
@@ -559,6 +565,7 @@ async function getCobaltDownloadUrl(
   downloadMode: "auto" | "audio" | "mute" = "auto",
   signal?: AbortSignal,
 ): Promise<CobaltResult> {
+
   if (!cobaltReachable) throw new Error("[Cobalt] Unreachable");
   if (cbIsOpen("cobalt")) throw new Error("[CB] Cobalt circuit open");
 
@@ -567,7 +574,6 @@ async function getCobaltDownloadUrl(
 
   const timeoutSignal = AbortSignal.timeout(15_000);
   const fetchSignal = signal ? AbortSignal.any([timeoutSignal, signal]) : timeoutSignal;
-
   const response = await fetch(`${COBALT_URL}/`, {
     method: "POST",
     signal: fetchSignal,
@@ -585,7 +591,10 @@ async function getCobaltDownloadUrl(
       // 🧠 SMART DYNAMIC PROXY:
       // TikTok MUST use alwaysProxy: true (IP locking)
       // YouTube prefers alwaysProxy: false (saves server resources, direct CDN)
-      alwaysProxy: platform === "tiktok",
+      alwaysProxy:
+        platform === "tiktok" ||
+        platform === "instagram" ||
+        platform === "facebook",
       // if need fix use yt + tik tok 
 
       // Only apply TikTok audio flag if the platform is tiktok
@@ -729,7 +738,9 @@ async function getYtDlpWithMutation(
 
       // Mark proxy and cookie as successful
       const proxy = proxyPool.pickByIndex(attempt);
-      if (proxy) proxyPool.success(proxy);
+      if (ctx.proxy) {
+        proxyPool.success(ctx.proxy);
+      }
       if (ctx.cookiePath) cookieManager.markSuccess(platform as any, ctx.cookiePath);
 
       cbSuccess("ytdlp");
@@ -742,7 +753,13 @@ async function getYtDlpWithMutation(
 
       // Mark proxy/cookie as failed
       const proxy = proxyPool.pickByIndex(attempt);
-      if (proxy) proxyPool.failure(proxy, platform, c.category === "rate_limit");
+      if (ctx.proxy) {
+        proxyPool.failure(
+          ctx.proxy,
+          platform,
+          c.category === "rate_limit"
+        );
+      }
       if (ctx.cookiePath) cookieManager.markFailed(platform as any, ctx.cookiePath);
 
       log("warn", "ytdlp", `Attempt ${attempt + 1} failed`, { category: c.category, error: err?.message?.slice(0, 100) });
@@ -948,7 +965,7 @@ export const getDownloadLink = async (
       // ───────────────────────────────────────────────────────────────────────
       try {
         log("info", "download", "Executing Tier 1 (Cobalt)", { url: resolvedUrl.slice(0, 80) });
-         const res = await getCobaltDownloadUrl(resolvedUrl, quality, platform, "auto", clientDisconnectController.signal);
+        const res = await getCobaltDownloadUrl(resolvedUrl, quality, platform, "auto", clientDisconnectController.signal);
 
         const tunnelInfo = safeTunnelUrl(res.url);
         payload = {
@@ -1024,7 +1041,9 @@ export const getDownloadLink = async (
         try {
           log("info", "download", "Executing Tier 4 Browser Core Fallback", { url: resolvedUrl.slice(0, 80) });
 
-          const pInstance = proxyPool.pick(platform);
+          const pInstance =
+            proxyPool.pick(platform) ??
+            proxyPool.pick();
           const pConfig = pInstance ? proxyPool.playwrightProxy(pInstance) : undefined;
 
           const res = await extractWithPlaywright({

@@ -8,15 +8,16 @@
 import { CookiePlatform } from "../cookies/Cookie.manager.js";
 import { identityManager, Identity } from "../manager/Identity.manager.js";
 identityManager
+import type { Proxy } from "../Proxy/Proxy.pool.js";
 
 
 
 export interface AttemptContext {
   attemptIndex: number;
-  proxy:        string | null;   // proxy URL or null for direct
-  cookiePath:   string | null;
-  identity:     Identity;
-  signal?:      AbortSignal;
+  proxy: Proxy | null;
+  cookiePath: string | null;
+  identity: Identity;
+  signal?: AbortSignal;
 }
 
 export interface AdapterResult {

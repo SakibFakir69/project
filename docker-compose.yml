@@ -67,8 +67,6 @@ services:
       DURATION_LIMIT:     "10800"
       COOKIE_PATH:        "/cookies.json"
       API_EXTERNAL_PROXY: "http://ypadwxjb-rotate:fxazhyr9knac@p.webshare.io:80"
-      
-      # 2. Modern Undici engine fallback variables (Crucial for v10 scraper pipelines)
       HTTP_PROXY:         "http://ypadwxjb-rotate:fxazhyr9knac@p.webshare.io:80"
       HTTPS_PROXY:        "http://ypadwxjb-rotate:fxazhyr9knac@p.webshare.io:80"
     volumes:
