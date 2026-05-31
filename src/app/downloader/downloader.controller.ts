@@ -457,14 +457,14 @@ async function resolveRedirectUrl(url: string): Promise<string> {
 // This is why mutation-based retry succeeds where identical retry fails.
 
 function buildAttemptContext(
-  url:          string,
-  platform:     Platform,
+  url: string,
+  platform: Platform,
   attemptIndex: number,
-  signal?:      AbortSignal,
+  signal?: AbortSignal,
 ): AttemptContext {
   // FIX: Pass platform to pickByIndex so it skips proxies temporarily banned for this platform
-  const proxy    = proxyPool.pickByIndex(attemptIndex, platform); 
-  const cookie   = cookieManager.byIndex(platform as any, attemptIndex);
+  const proxy = proxyPool.pickByIndex(attemptIndex, platform);
+  const cookie = cookieManager.byIndex(platform as any, attemptIndex);
   const identity = identityManager.forAttempt(attemptIndex);
 
   return { attemptIndex, proxy: proxy?.url ?? null, cookiePath: cookie, identity, signal };
@@ -528,33 +528,35 @@ function buildGalleryDlArgs(url: string, platform: Platform, ctx: AttemptContext
 
 interface CobaltResult { url: string; audioUrl: string | null; filename: string; type: string; }
 
-async function getCobaltDownloadUrl(resolvedUrl: string, quality = "720", signal?: AbortSignal): Promise<CobaltResult> {
+async function getCobaltDownloadUrl(resolvedUrl: string, quality = "1080", signal?: AbortSignal): Promise<CobaltResult> {
   if (!cobaltReachable) throw new Error("[Cobalt] Unreachable");
   if (cbIsOpen("cobalt")) throw new Error("[CB] Cobalt circuit open");
 
-  const validQ = ["144", "240", "360", "480", "720", "1080", "1440", "2160"];
-  const q = validQ.includes(quality.replace("p", "")) ? quality.replace("p", "") : "720";
+  const validQ = ["max", "144", "240", "360", "480", "720", "1080", "1440", "2160", "4320"];
+  const q = validQ.includes(quality.replace("p", "")) ? quality.replace("p", "") : "1080";
 
-  // FIX 2: Combine timeout signal with client disconnect signal
   const timeoutSignal = AbortSignal.timeout(15_000);
   const fetchSignal = signal ? AbortSignal.any([timeoutSignal, signal]) : timeoutSignal;
 
-const response = await fetch(`${COBALT_URL}/`, {
-  method: "POST", 
-  signal: fetchSignal,
-  headers: { "Content-Type": "application/json", "Accept": "application/json" },
-  body: JSON.stringify({ 
-    url: resolvedUrl, 
-    vQuality: q,   // ✅ FIXED: Changed from videoQuality to vQuality
-    filenameStyle: "classic", 
-    downloadMode: "auto", 
-    youtubeVideoCodec: "h264" 
-  }),
-});
+  const response = await fetch(`${COBALT_URL}/`, {
+    method: "POST",
+    signal: fetchSignal,
+    headers: { 
+      "Content-Type": "application/json", 
+      "Accept": "application/json",
+    },
+    body: JSON.stringify({
+      url:               resolvedUrl,
+      videoQuality:      q,
+      filenameStyle:     "basic",
+      downloadMode:      "auto",
+      youtubeVideoCodec: "h264",
+      allowH265:         false,
+      alwaysProxy:       false,
+    }),
+  });
 
   if (!response.ok) {
-    // Only trip circuit breaker on systemic issues (429 rate limit, 500+ server errors)
-    // Do NOT trip for 400/404 (user errors like invalid URLs)
     if (response.status === 429 || response.status >= 500) {
       cbFailure("cobalt");
     }
@@ -574,9 +576,11 @@ const response = await fetch(`${COBALT_URL}/`, {
       return { url: vid!.url, audioUrl: aud?.url ?? null, filename: data.filename ?? "video.mp4", type: "picker" };
     }
     case "error":
-      cbFailure("cobalt"); throw new Error(`Cobalt error: ${data.error?.code}`);
+      cbFailure("cobalt");
+      throw new Error(`Cobalt error: ${data.error?.code}`);
     default:
-      cbFailure("cobalt"); throw new Error(`Unknown Cobalt status: ${data.status}`);
+      cbFailure("cobalt");
+      throw new Error(`Unknown Cobalt status: ${data.status}`);
   }
 }
 
@@ -812,9 +816,6 @@ export const getVideoInfo = async (
 };
 
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 2. GET DOWNLOAD LINK  (4-tier fallback + mutation retry)
-// ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. GET DOWNLOAD LINK  (4-tier fallback + mutation retry)
@@ -876,7 +877,7 @@ export const getDownloadLink = async (
       try {
         log("info", "download", "Executing Tier 1 (Cobalt)", { url: resolvedUrl.slice(0, 80) });
         const res = await getCobaltDownloadUrl(resolvedUrl, quality, clientDisconnectController.signal);
-        
+
         const tunnelInfo = safeTunnelUrl(res.url);
         payload = {
           url: tunnelInfo.url,
@@ -900,7 +901,7 @@ export const getDownloadLink = async (
         try {
           log("info", "download", "Executing Tier 2 (yt-dlp mutation)", { url: resolvedUrl.slice(0, 80) });
           const res = await getYtDlpWithMutation(resolvedUrl, platform, quality, clientDisconnectController.signal);
-          
+
           const tunnelInfo = safeTunnelUrl(res.videoUrl);
           payload = {
             url: tunnelInfo.url,
@@ -926,7 +927,7 @@ export const getDownloadLink = async (
         try {
           log("info", "download", "Executing Tier 3 (gallery-dl)", { url: resolvedUrl.slice(0, 80) });
           const res = await getGalleryDlDownloadUrl(resolvedUrl, platform, clientDisconnectController.signal);
-          
+
           const tunnelInfo = safeTunnelUrl(res.videoUrl);
           payload = {
             url: tunnelInfo.url,
@@ -950,7 +951,7 @@ export const getDownloadLink = async (
       if (!payload) {
         try {
           log("info", "download", "Executing Tier 4 Browser Core Fallback", { url: resolvedUrl.slice(0, 80) });
-          
+
           const pInstance = proxyPool.pick(platform);
           const pConfig = pInstance ? proxyPool.playwrightProxy(pInstance) : undefined;
 
