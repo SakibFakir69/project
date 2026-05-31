@@ -25,6 +25,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         yt-dlp \
         gallery-dl \
     && rm -rf /var/lib/apt/lists/*
+    
+    # In your app container's Dockerfile
+RUN pip install --break-system-packages --upgrade yt-dlp "curl_cffi>=0.7.0"
 
 # Tell Playwright to use the system Chromium instead of downloading its own
 ENV PLAYWRIGHT_BROWSERS_PATH=/usr/bin

@@ -34,7 +34,7 @@ import { identityManager } from "../../manager/Identity.manager.js";
 import { getAdapter } from "../../index/index.adapter.js";
 import { extractWithPlaywright } from "../../Playwright/Playwright.extractor.js";
 import { scheduleDaily } from "../../cron/Updater.cron.js";
-import type { AttemptContext } from "./../../adapter/ Base.adapter.js"
+import type { AttemptContext } from "../../adapter/Base.adapter.js"
 
 
 
