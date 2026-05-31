@@ -30,30 +30,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Upgrade pip first
 RUN pip3 install --break-system-packages --no-cache-dir --upgrade pip setuptools wheel
 
-# Install curl_cffi — try binary wheel first, fall back to source
-RUN pip3 install --break-system-packages --no-cache-dir \
-        --prefer-binary \
-        "curl_cffi==0.7.4" \
-    || pip3 install --break-system-packages --no-cache-dir \
-        "curl_cffi==0.7.4"
+RUN pip3 install --break-system-packages --no-cache-dir --prefer-binary "curl_cffi==0.7.4"
 
-# Install yt-dlp and gallery-dl
 RUN pip3 install --break-system-packages --no-cache-dir yt-dlp gallery-dl
 
-# Debug — show exactly what curl_cffi sees
-RUN python3 -c "
-import curl_cffi
-print('version:', curl_cffi.__version__)
-try:
-    from curl_cffi import requests
-    r = requests.get('https://example.com', impersonate='chrome')
-    print('impersonate chrome: OK')
-except Exception as e:
-    print('impersonate chrome: FAILED —', e)
-"
+# Debug — single line, no parse issues
+RUN python3 -c "import curl_cffi; print('version:', curl_cffi.__version__)" && \
+    python3 -c "from curl_cffi import requests; requests.get('https://example.com', impersonate='chrome'); print('impersonate chrome OK')"
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/usr/bin
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
