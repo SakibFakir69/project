@@ -11,7 +11,7 @@ RUN npm prune --omit=dev
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM node:20-slim AS runtime
 
-# System deps + Playwright system deps (all as root)
+# System deps + Python tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
@@ -24,10 +24,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip3 install --break-system-packages --no-cache-dir \
         yt-dlp \
         gallery-dl \
+        "curl_cffi>=0.7.0" \
+    && pip3 install --break-system-packages --upgrade \
+        yt-dlp \
+        "curl_cffi>=0.7.0" \
     && rm -rf /var/lib/apt/lists/*
-    
-    # In your app container's Dockerfile
-RUN pip install --break-system-packages --upgrade yt-dlp "curl_cffi>=0.7.0"
 
 # Tell Playwright to use the system Chromium instead of downloading its own
 ENV PLAYWRIGHT_BROWSERS_PATH=/usr/bin
