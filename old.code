@@ -1,1 +1,136 @@
 77.42.122.38
+
+---------------
+new
+// ── Short URL resolver ────────────────────────────────────────────────────────
+async function resolveRedirectUrl(url: string): Promise<string> {
+  const isShort = /vt\.tiktok|vm\.tiktok|pin\.it|fb\.watch|redd\.it|youtu\.be|t\.co/i.test(url);
+  if (!isShort && !url.includes('/share/')) return url;
+
+  log("debug", "resolver", "Attempting to resolve short URL", { url: url.slice(0, 80) });
+
+  // Strategy 1: fetch with redirect:follow (works for most)
+  try {
+    const res = await fetch(url, {
+      method:   "GET",
+      redirect: "follow",
+      signal:   AbortSignal.timeout(8_000),
+      headers: {
+        "User-Agent":       "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+        "Accept":           "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language":  "en-US,en;q=0.9",
+      },
+    });
+
+    res.body?.cancel();
+    const resolved = res.url || url;
+
+    if (resolved !== url && !resolved.includes('vt.tiktok') && !resolved.includes('vm.tiktok')) {
+      log("debug", "resolver", "Strategy 1 resolved", { from: url.slice(0, 80), to: resolved.slice(0, 120) });
+      return resolved;
+    }
+  } catch (e: any) {
+    log("warn", "resolver", "Strategy 1 failed", { error: e?.message });
+  }
+
+  // Strategy 2: manual redirect chain (for TikTok which needs extra hops)
+  try {
+    let current = url;
+    let hops    = 0;
+    const MAX_HOPS = 5;
+
+    while (hops < MAX_HOPS) {
+      const res = await fetch(current, {
+        method:   "GET",
+        redirect: "manual",   // ← manual so we can follow each hop ourselves
+        signal:   AbortSignal.timeout(5_000),
+        headers: {
+          "User-Agent":      "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+          "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9",
+        },
+      });
+
+      res.body?.cancel();
+
+      const location = res.headers.get("location");
+
+      log("debug", "resolver", `Hop ${hops + 1}`, {
+        from:     current.slice(0, 80),
+        status:   res.status,
+        location: location?.slice(0, 120) ?? "none",
+      });
+
+      // Not a redirect — we have arrived
+      if (res.status < 300 || res.status >= 400 || !location) {
+        if (current !== url) {
+          log("debug", "resolver", "Strategy 2 resolved", { from: url.slice(0, 80), to: current.slice(0, 120) });
+          return current;
+        }
+        break;
+      }
+
+      // Resolve relative redirects
+      current = location.startsWith("http") ? location : new URL(location, current).href;
+      hops++;
+    }
+  } catch (e: any) {
+    log("warn", "resolver", "Strategy 2 failed", { error: e?.message });
+  }
+
+  // Strategy 3: curl via execFile (most reliable for TikTok — bypasses Node fetch issues)
+  try {
+    const { stdout } = await execFilePromise("curl", [
+      "-s",                  // silent
+      "-o", "/dev/null",     // discard body
+      "-w", "%{url_effective}", // print final URL only
+      "-L",                  // follow redirects
+      "--max-redirs", "5",
+      "--connect-timeout", "8",
+      "-A", "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+      url,
+    ], { encoding: "utf8", timeout: 10_000 });
+
+    const resolved = (stdout as string).trim();
+    if (resolved && resolved !== url && resolved.startsWith("http")) {
+      log("debug", "resolver", "Strategy 3 (curl) resolved", { from: url.slice(0, 80), to: resolved.slice(0, 120) });
+      return resolved;
+    }
+  } catch (e: any) {
+    log("warn", "resolver", "Strategy 3 (curl) failed", { error: e?.message });
+  }
+
+  log("warn", "resolver", "All strategies failed — returning original URL", { url: url.slice(0, 80) });
+  return url;
+}
+----
+old
+----async function resolveRedirectUrl(url: string): Promise<string> {
+  const isShort = /vt\.tiktok|vm\.tiktok|pin\.it|fb\.watch|redd\.it|youtu\.be|t\.co/i.test(url);
+  if (!isShort && !url.includes('/share/')) return url;
+
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      redirect: "follow",
+      signal: AbortSignal.timeout(8_000),
+      headers: {
+        // Mobile UA is crucial for TikTok/Instagram short links to redirect properly
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+      },
+    });
+    
+    // Cancel the body stream to prevent downloading the actual page/video file
+    // We only care about the final redirected URL
+    res.body?.cancel();
+
+    const resolved = res.url || url;
+    if (resolved !== url)
+      log("debug", "resolver", "Resolved redirect", { from: url.slice(0, 80), to: resolved.slice(0, 120) });
+    
+    // 🔴 FIX: DO NOT strip query parameters. Extractors need them for signature validation.
+    return resolved;
+  } catch {
+    return url;
+  }
+}

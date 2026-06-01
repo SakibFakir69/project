@@ -1,8 +1,6 @@
 /**
  * updater.cron.ts
- * Runs yt-dlp -U daily at 3 AM server time.
- * Uses a lock file to prevent concurrent updates.
- * Safe: uses spawn (not execSync) so it never blocks the event loop.
+ * Updates yt-dlp daily at 3 AM via pip (not yt-dlp -U which doesn't work with pip installs).
  */
 
 import { spawn, execFile } from "node:child_process";
@@ -13,7 +11,9 @@ const execFileAsync = promisify(execFile);
 const LOCK_FILE     = "/tmp/ytdlp-update.lock";
 
 function log(level: string, msg: string, extra?: any) {
-  process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), level, service: "updater", msg, ...extra }) + "\n");
+  process.stdout.write(JSON.stringify({
+    ts: new Date().toISOString(), level, service: "updater", msg, ...extra,
+  }) + "\n");
 }
 
 async function getYtDlpVersion(): Promise<string> {
@@ -24,32 +24,35 @@ async function getYtDlpVersion(): Promise<string> {
 }
 
 async function runUpdate(): Promise<void> {
-  // Prevent concurrent updates
+  // ── Lock check ────────────────────────────────────────────────────────────
   if (existsSync(LOCK_FILE)) {
     const lockAge = Date.now() - statSync(LOCK_FILE).mtimeMs;
     if (lockAge < 10 * 60_000) {
       log("info", "Update already running (lock file exists), skipping");
       return;
     }
-    // Stale lock — remove it
-    unlinkSync(LOCK_FILE);
+    unlinkSync(LOCK_FILE); // stale lock
   }
 
   const before = await getYtDlpVersion();
   log("info", "Starting yt-dlp update", { versionBefore: before });
 
-  writeFileSync(LOCK_FILE, String(Date.now()));
+  writeFileSync(LOCK_FILE, ""); // touch — mtime is what matters
 
   return new Promise((resolve) => {
-    const proc = spawn("yt-dlp", ["-U"], {
+    // ── Use pip install --upgrade (works with pip-installed yt-dlp) ──────────
+    const proc = spawn("pip3", [
+      "install",
+      "--break-system-packages",
+      "--no-cache-dir",
+      "--upgrade",
+      "yt-dlp",
+    ], {
       stdio:    "pipe",
       detached: false,
     });
 
-    let stdout = "";
     let stderr = "";
-
-    proc.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
     proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
 
     proc.on("close", async (code) => {
@@ -78,25 +81,29 @@ async function runUpdate(): Promise<void> {
   });
 }
 
+function msUntilNextRun(): number {
+  const now  = new Date();
+  const next = new Date();
+  next.setHours(3, 0, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  return next.getTime() - now.getTime();
+}
+
 function scheduleDaily(): void {
-  // Run immediately on startup check
-  runUpdate();
+  // ── Run on startup ─────────────────────────────────────────────────────────
+  runUpdate().catch(err =>
+    log("error", "Startup update failed", { error: err?.message })
+  );
 
-  // Schedule to run at 3 AM daily
-  function msUntilNextRun(): number {
-    const now  = new Date();
-    const next = new Date();
-    next.setHours(3, 0, 0, 0);
-    if (next <= now) next.setDate(next.getDate() + 1);
-    return next.getTime() - now.getTime();
-  }
-
+  // ── Schedule at 3 AM daily — recursive to avoid drift ─────────────────────
   function schedule() {
     const delay = msUntilNextRun();
     log("info", `Next yt-dlp update scheduled in ${Math.round(delay / 3_600_000)}h`);
-    setTimeout(() => {
-      runUpdate();
-      setInterval(runUpdate, 24 * 60 * 60_000); // every 24h after first run
+    setTimeout(async () => {
+      await runUpdate().catch(err =>
+        log("error", "Scheduled update failed", { error: err?.message })
+      );
+      schedule(); // always reschedule for next 3 AM — no drift
     }, delay);
   }
 
