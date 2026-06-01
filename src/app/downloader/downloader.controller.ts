@@ -854,17 +854,83 @@ export const getVideoInfo = async (
   }
 
   const result = await dedupe(cacheKey, async () => {
-    const data = await getYtDlpInfo(resolvedUrl, platform)
-      .catch(e => { log("warn", "ytdlp", "Info failed", { error: e.message?.slice(0, 100) }); return null; });
-    return data ? { source: "ytdlp" as const, data } : null;
+
+    // ── Tier 1: Cobalt (fast, no metadata but confirms video exists) ────────
+    if (cobaltReachable) {
+      try {
+        log("info", "info", "Tier 1 (Cobalt) info", { url: resolvedUrl.slice(0, 80) });
+        const res = await getCobaltDownloadUrl(resolvedUrl, "720", platform, "auto");
+        if (res?.url) {
+          return {
+            source: "cobalt" as const,
+            data: {
+              title:     res.filename?.replace(/\.[^/.]+$/, "") ?? `Video from ${platform}`,
+              thumbnail: null,
+              duration:  0,
+              ext:       res.filename?.split(".").pop() ?? "mp4",
+            },
+          };
+        }
+      } catch (e: any) {
+        log("warn", "info", "Tier 1 (Cobalt) info failed", { error: e.message?.slice(0, 100) });
+      }
+    }
+
+    // ── Tier 2: yt-dlp basic (fast, rich metadata) ──────────────────────────
+    try {
+      log("info", "info", "Tier 2 (yt-dlp) info", { url: resolvedUrl.slice(0, 80) });
+      const data = await getYtDlpInfo(resolvedUrl, platform);
+      if (data) return { source: "ytdlp" as const, data };
+    } catch (e: any) {
+      log("warn", "info", "Tier 2 (yt-dlp) info failed", { error: e.message?.slice(0, 100) });
+    }
+
+    // ── Tier 3: yt-dlp with mutation (full retry with proxy/cookie) ─────────
+    try {
+      log("info", "info", "Tier 3 (yt-dlp mutation) info", { url: resolvedUrl.slice(0, 80) });
+      const res = await getYtDlpWithMutation(resolvedUrl, platform, "720");
+      if (res) {
+        return {
+          source: "ytdlp" as const,
+          data: {
+            title:     res.title,
+            thumbnail: res.thumbnail,
+            duration:  res.duration,
+            ext:       res.ext,
+          },
+        };
+      }
+    } catch (e: any) {
+      log("warn", "info", "Tier 3 (yt-dlp mutation) info failed", { error: e.message?.slice(0, 100) });
+    }
+
+    return null;
   });
 
+  // ── Cache and return if any tier succeeded ──────────────────────────────────
   if (result) {
     await cache.set(cacheKey, result.data, 15 * 60_000);
-    return reply.code(200).send({ success: true, source: result.source, message: "Fetch video info successful", data: result.data });
+    return reply.code(200).send({
+      success: true,
+      source:  result.source,
+      message: "Fetch video info successful",
+      data:    result.data,
+    });
   }
 
-  return reply.code(500).send({ success: false, message: "Failed to fetch video info" });
+  // ── Soft fail: all tiers failed but let frontend still try downloading ──────
+  log("warn", "info", "All info tiers failed — returning soft fail", { url: resolvedUrl.slice(0, 80) });
+  return reply.code(200).send({
+    success: true,
+    source:  "unknown",
+    message: "Info unavailable, but download might work",
+    data: {
+      title:     `Video from ${platform}`,
+      thumbnail: null,
+      duration:  0,
+      ext:       "mp4",
+    },
+  });
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
