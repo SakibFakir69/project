@@ -20,7 +20,7 @@ import type { AttemptContext } from "../../adapter/Base.adapter.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const BASE_URL   = process.env.API_URL    ?? "https://downtubebest.duckdns.org/api/v1";
+const TUNNEL_BASE_URL  = process.env.API_URL    ?? "https://downtubebest.duckdns.org";
 const COBALT_URL = process.env.COBALT_URL ?? "http://cobalt-api:9000";
 const REDIS_URL  = process.env.REDIS_URL  ?? "";
 const NODE_ENV   = process.env.NODE_ENV   ?? "production";
@@ -230,7 +230,7 @@ function isCdnAllowed(url: string): boolean {
 
 function safeTunnelUrl(raw: string): { url: string; tunnelAllowed: boolean } {
   return isCdnAllowed(raw)
-    ? { url: `${BASE_URL}/tunnel?url=${encodeURIComponent(raw)}`, tunnelAllowed: true }
+    ? { url: `${TUNNEL_BASE_URL}/tunnel?url=${encodeURIComponent(raw)}`, tunnelAllowed: true }
     : { url: raw, tunnelAllowed: false };
 }
 
@@ -388,9 +388,7 @@ function dedupe<T>(key: string, fn: () => Promise<T>): Promise<T> {
 }
 
 // ── Short URL resolver ────────────────────────────────────────────────────────
-// 🔴 FIX: Removed `Range: bytes=0-0` which tricked CDNs into returning raw video streams 
-// instead of the HTML page, breaking all extractors. Now uses GET and immediately cancels 
-// the body download after getting the redirect URL.
+
 
 async function resolveRedirectUrl(url: string): Promise<string> {
   const isShort = /vt\.tiktok|vm\.tiktok|pin\.it|fb\.watch|redd\.it|youtu\.be|t\.co/i.test(url);
@@ -1174,7 +1172,7 @@ export const tunnel = async (req: FastifyRequest, reply: FastifyReply) => {
     if (cl) reply.header("Content-Length", cl);
     if (cr) reply.header("Content-Range",  cr);
     const filename = rawFilename ?? targetUrl.split("/").pop()?.split("?")[0] ?? "video.mp4";
-    reply.header("Content-Disposition", `attachment; filename="${filename.replace(/[^\w.\-]/g, "_")}"`);
+    reply.header("Content-Disposition", `attachmen  t; filename="${filename.replace(/[^\w.\-]/g, "_")}"`);
     return reply.send(upstream.body);
   } catch (err: any) {
     log("error", "tunnel", "Fetch error", { error: err?.message });
