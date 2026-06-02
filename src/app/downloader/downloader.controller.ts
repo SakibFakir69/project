@@ -209,6 +209,7 @@ const CDN_ALLOWLIST = [
   /tiktokcdn\.com$/i,
   /tiktokcdn-us\.com$/i,
   /tiktok\.com\/aweme\/v\d+\/play/i,
+   /\.tiktok\.com$/i,  
   /fbcdn\.net$/i,
   /cdninstagram\.com$/i,
   /twimg\.com$/i,
@@ -1130,7 +1131,45 @@ export const resolveUrl = async (
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const tunnel = async (req: FastifyRequest, reply: FastifyReply) => {
-  const { url: rawUrl, filename: rawFilename } = req.query as { url?: string; filename?: string };
+  const { url: rawUrl, filename: rawFilename, id: tunnelId } = req.query as { url?: string; filename?: string; id?: string };
+
+  // ✅ FIX: If Cobalt sends an ?id= tunnel URL, proxy it to the Cobalt container
+  if (tunnelId && !rawUrl) {
+    try {
+      const queryString = req.url.split('?')[1];
+      const cobaltTunnelUrl = `${COBALT_URL}/tunnel?${queryString}`;
+      
+      const upstream = await fetch(cobaltTunnelUrl, { 
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+          "Accept": "*/*",
+        },
+        signal: AbortSignal.timeout(60_000) 
+      });
+      
+      if (!upstream.ok && upstream.status !== 206) {
+        return reply.code(502).send({ success: false, message: `Cobalt tunnel failed: ${upstream.status}` });
+      }
+
+      reply.status(upstream.status);
+      reply.header("Content-Type", upstream.headers.get("content-type") ?? "video/mp4");
+      reply.header("Content-Length", upstream.headers.get("content-length") ?? "");
+      reply.header("Content-Range", upstream.headers.get("content-range") ?? "");
+      reply.header("Accept-Ranges", "bytes");
+      reply.header("Cache-Control", "no-store");
+      reply.header("Access-Control-Allow-Origin", "*");
+      
+      const filename = rawFilename ?? `video_${tunnelId}.mp4`;
+      reply.header("Content-Disposition", `attachment; filename="${filename.replace(/[^\w.\-]/g, "_")}"`);
+      
+      return reply.send(upstream.body);
+    } catch (err: any) {
+      log("error", "tunnel", "Cobalt tunnel fetch error", { error: err?.message });
+      return reply.code(502).send({ success: false, message: "Cobalt tunnel upstream unreachable" });
+    }
+  }
+
+  // ── Original Direct URL Logic ────────────────────────────────────────────
   if (!rawUrl) return reply.code(400).send({ success: false, message: "url query param is required" });
 
   let targetUrl: string;
@@ -1175,7 +1214,7 @@ export const tunnel = async (req: FastifyRequest, reply: FastifyReply) => {
     if (cl) reply.header("Content-Length", cl);
     if (cr) reply.header("Content-Range",  cr);
     const filename = rawFilename ?? targetUrl.split("/").pop()?.split("?")[0] ?? "video.mp4";
-    reply.header("Content-Disposition", `attachmen  t; filename="${filename.replace(/[^\w.\-]/g, "_")}"`);
+    reply.header("Content-Disposition", `attachment; filename="${filename.replace(/[^\w.\-]/g, "_")}"`);
     return reply.send(upstream.body);
   } catch (err: any) {
     log("error", "tunnel", "Fetch error", { error: err?.message });
