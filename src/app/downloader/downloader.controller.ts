@@ -451,6 +451,9 @@ function buildYtDlpArgs(
     "--retries", "3", "--fragment-retries", "3",
     "--file-access-retries", "3", "--extractor-retries", "3",
     "--add-header", `User-Agent:${ctx.identity.userAgent}`,
+      // ✅ ADD THESE TWO LINES TO FIX TWITTER M3U8:
+    "--hls-prefer-native",          // Forces yt-dlp to use native HLS downloader
+    "--merge-output-format", "mp4", // Forces yt-dlp to merge into mp4 container
     ...identityManager.ytdlpHeaderArgs(ctx.identity),
     ...proxyPool.ytdlpArgs(ctx.proxy),
     ...adapter.ytdlpPlatformArgs(ctx),
