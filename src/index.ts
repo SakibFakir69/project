@@ -27,12 +27,12 @@ app.get("/", async (req, reply) => {
   return { message: "Hello World", time: process.uptime() };
 });
 
-// ✅ Tunnel registered WITHOUT /api/v1 prefix
-// Cobalt generates URLs like: https://yourdomain.com/tunnel?id=xxx
+
 app.get('/tunnel', downloadController.tunnel);
 
 // Routes WITH /api/v1 prefix
 app.register(downloadRoutes, { prefix: '/api/v1' });
+
 
 app.get('/home', (request, reply) => {
   return { message: "Welcome to authservices" };

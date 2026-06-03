@@ -28,7 +28,9 @@ export class TwitterAdapter extends BaseAdapter {
    */
   ytdlpPlatformArgs(ctx: AttemptContext): string[] {
     return [
-      "--extractor", "twitter",
+      // 🔴 FIX: Changed from "--extractor", "twitter" to "--extractor-args"
+      // This fixes the "ambiguous option" crash and uses the syndication API which doesn't require login
+      "--extractor-args", "twitter:api=syndication",
       "--no-playlist", 
     ];
   }

@@ -1,5 +1,5 @@
 /**
- * download.controller.ts — v6.1 (TikTok / Short URL Fix)
+ * download.controller.ts — v6.2 (Direct URL Priority + Tunnel Fallback)
  */
 
 import { execFile } from "node:child_process";
@@ -229,10 +229,22 @@ function isCdnAllowed(url: string): boolean {
   } catch { return false; }
 }
 
-function safeTunnelUrl(raw: string): { url: string; tunnelAllowed: boolean } {
-  return isCdnAllowed(raw)
-    ? { url: `${TUNNEL_BASE_URL}/tunnel?url=${encodeURIComponent(raw)}`, tunnelAllowed: true }
-    : { url: raw, tunnelAllowed: false };
+// ── NEW: Direct URL priority + Tunnel Fallback ─────────────────────────────────
+
+interface PreparedUrls {
+  directUrl: string;
+  tunnelUrl: string | null;
+  tunnelAllowed: boolean;
+}
+
+function prepareUrls(raw: string): PreparedUrls {
+  if (!raw) return { directUrl: "", tunnelUrl: null, tunnelAllowed: false };
+  const isAllowed = isCdnAllowed(raw);
+  return {
+    directUrl: raw, // The raw CDN URL (Mobile apps use this to download directly)
+    tunnelUrl: isAllowed ? `${TUNNEL_BASE_URL}/tunnel?url=${encodeURIComponent(raw)}` : null, // Server proxy fallback
+    tunnelAllowed: isAllowed,
+  };
 }
 
 // ── Semaphore ─────────────────────────────────────────────────────────────────
@@ -401,20 +413,16 @@ async function resolveRedirectUrl(url: string): Promise<string> {
       redirect: "follow",
       signal: AbortSignal.timeout(8_000),
       headers: {
-        // Mobile UA is crucial for TikTok/Instagram short links to redirect properly
         "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
       },
     });
     
-    // Cancel the body stream to prevent downloading the actual page/video file
-    // We only care about the final redirected URL
     res.body?.cancel();
 
     const resolved = res.url || url;
     if (resolved !== url)
       log("debug", "resolver", "Resolved redirect", { from: url.slice(0, 80), to: resolved.slice(0, 120) });
     
-    // 🔴 FIX: DO NOT strip query parameters. Extractors need them for signature validation.
     return resolved;
   } catch {
     return url;
@@ -452,9 +460,8 @@ function buildYtDlpArgs(
     "--retries", "3", "--fragment-retries", "3",
     "--file-access-retries", "3", "--extractor-retries", "3",
     "--add-header", `User-Agent:${ctx.identity.userAgent}`,
-      // ✅ ADD THESE TWO LINES TO FIX TWITTER M3U8:
-    "--hls-prefer-native",          // Forces yt-dlp to use native HLS downloader
-    "--merge-output-format", "mp4", // Forces yt-dlp to merge into mp4 container
+    "--hls-prefer-native",
+    "--merge-output-format", "mp4",
     ...identityManager.ytdlpHeaderArgs(ctx.identity),
     ...proxyPool.ytdlpArgs(ctx.proxy),
     ...adapter.ytdlpPlatformArgs(ctx),
@@ -557,8 +564,6 @@ async function getCobaltDownloadUrl(
     });
   }
 
-  // 🔴 FIX: Removed "X-Proxy-Url" header. Cobalt API does not support custom proxy 
-  // headers and will reject unknown headers with a 400 Bad Request on strict instances.
   const response = await fetch(`${COBALT_URL}/`, {
     method:  "POST",
     signal:  fetchSignal,
@@ -857,7 +862,6 @@ export const getVideoInfo = async (
 
   const result = await dedupe(cacheKey, async () => {
 
-    // ── Tier 1: Cobalt (fast, no metadata but confirms video exists) ────────
     if (cobaltReachable) {
       try {
         log("info", "info", "Tier 1 (Cobalt) info", { url: resolvedUrl.slice(0, 80) });
@@ -878,7 +882,6 @@ export const getVideoInfo = async (
       }
     }
 
-    // ── Tier 2: yt-dlp basic (fast, rich metadata) ──────────────────────────
     try {
       log("info", "info", "Tier 2 (yt-dlp) info", { url: resolvedUrl.slice(0, 80) });
       const data = await getYtDlpInfo(resolvedUrl, platform);
@@ -887,7 +890,6 @@ export const getVideoInfo = async (
       log("warn", "info", "Tier 2 (yt-dlp) info failed", { error: e.message?.slice(0, 100) });
     }
 
-    // ── Tier 3: yt-dlp with mutation (full retry with proxy/cookie) ─────────
     try {
       log("info", "info", "Tier 3 (yt-dlp mutation) info", { url: resolvedUrl.slice(0, 80) });
       const res = await getYtDlpWithMutation(resolvedUrl, platform, "720");
@@ -909,7 +911,6 @@ export const getVideoInfo = async (
     return null;
   });
 
-  // ── Cache and return if any tier succeeded ──────────────────────────────────
   if (result) {
     await cache.set(cacheKey, result.data, 15 * 60_000);
     return reply.code(200).send({
@@ -920,7 +921,6 @@ export const getVideoInfo = async (
     });
   }
 
-  // ── Soft fail: all tiers failed but let frontend still try downloading ──────
   log("warn", "info", "All info tiers failed — returning soft fail", { url: resolvedUrl.slice(0, 80) });
   return reply.code(200).send({
     success: true,
@@ -986,16 +986,18 @@ export const getDownloadLink = async (
           const res = await getCobaltDownloadUrl(
             resolvedUrl, quality, platform, "auto", clientDisconnectController.signal,
           );
-          const t = safeTunnelUrl(res.url);
+          const urls = prepareUrls(res.url);
           payload = {
-            url:          t.url,
-            audioUrl:     res.audioUrl ? safeTunnelUrl(res.audioUrl).url : null,
+            url:          urls.directUrl,
+            tunnelUrl:    urls.tunnelUrl,
+            audioUrl:     res.audioUrl ? prepareUrls(res.audioUrl).directUrl : null,
+            audioTunnelUrl: res.audioUrl ? prepareUrls(res.audioUrl).tunnelUrl : null,
             title:        res.filename.replace(/\.[^/.]+$/, ""),
             thumbnail:    null,
             duration:     0,
             ext:          res.filename.split(".").pop() ?? "mp4",
             mimeType:     guessMime(res.filename),
-            tunnelAllowed: t.tunnelAllowed,
+            tunnelAllowed: urls.tunnelAllowed,
           };
           usedTier = "cobalt";
         } catch (err: any) {
@@ -1009,16 +1011,18 @@ export const getDownloadLink = async (
           const res = await getYtDlpWithMutation(
             resolvedUrl, platform, quality, clientDisconnectController.signal,
           );
-          const t = safeTunnelUrl(res.videoUrl);
+          const urls = prepareUrls(res.videoUrl);
           payload = {
-            url:          t.url,
-            audioUrl:     res.audioUrl ? safeTunnelUrl(res.audioUrl).url : null,
+            url:          urls.directUrl,
+            tunnelUrl:    urls.tunnelUrl,
+            audioUrl:     res.audioUrl ? prepareUrls(res.audioUrl).directUrl : null,
+            audioTunnelUrl: res.audioUrl ? prepareUrls(res.audioUrl).tunnelUrl : null,
             title:        res.title,
             thumbnail:    res.thumbnail,
             duration:     res.duration,
             ext:          res.ext,
             mimeType:     guessMime(`video.${res.ext}`),
-            tunnelAllowed: t.tunnelAllowed,
+            tunnelAllowed: urls.tunnelAllowed,
             strategyUsed: res.strategyUsed,
           };
           usedTier = "ytdlp";
@@ -1033,16 +1037,18 @@ export const getDownloadLink = async (
           const res = await getGalleryDlDownloadUrl(
             resolvedUrl, platform, clientDisconnectController.signal,
           );
-          const t = safeTunnelUrl(res.videoUrl);
+          const urls = prepareUrls(res.videoUrl);
           payload = {
-            url:          t.url,
+            url:          urls.directUrl,
+            tunnelUrl:    urls.tunnelUrl,
             audioUrl:     null,
+            audioTunnelUrl: null,
             title:        res.title,
             thumbnail:    res.thumbnail,
             duration:     0,
             ext:          res.filename.split(".").pop() ?? "mp4",
             mimeType:     guessMime(res.filename),
-            tunnelAllowed: t.tunnelAllowed,
+            tunnelAllowed: urls.tunnelAllowed,
           };
           usedTier = "gallerydl";
         } catch (err: any) {
@@ -1065,16 +1071,18 @@ export const getDownloadLink = async (
           if (!res?.videoUrl) throw new Error("Playwright: no media captured");
           if (pInstance) proxyPool.success(pInstance);
 
-          const t = safeTunnelUrl(res.videoUrl);
+          const urls = prepareUrls(res.videoUrl);
           payload = {
-            url:          t.url,
+            url:          urls.directUrl,
+            tunnelUrl:    urls.tunnelUrl,
             audioUrl:     null,
+            audioTunnelUrl: null,
             title:        res.title     ?? "downloaded_video",
             thumbnail:    res.thumbnail ?? null,
             duration:     0,
             ext:          "mp4",
             mimeType:     guessMime("video.mp4"),
-            tunnelAllowed: t.tunnelAllowed,
+            tunnelAllowed: urls.tunnelAllowed,
           };
           usedTier = "playwright";
         } catch (err: any) {
@@ -1133,7 +1141,6 @@ export const resolveUrl = async (
 export const tunnel = async (req: FastifyRequest, reply: FastifyReply) => {
   const { url: rawUrl, filename: rawFilename, id: tunnelId } = req.query as { url?: string; filename?: string; id?: string };
 
-  // ✅ FIX: If Cobalt sends an ?id= tunnel URL, proxy it to the Cobalt container
   if (tunnelId && !rawUrl) {
     try {
       const queryString = req.url.split('?')[1];
@@ -1169,7 +1176,6 @@ export const tunnel = async (req: FastifyRequest, reply: FastifyReply) => {
     }
   }
 
-  // ── Original Direct URL Logic ────────────────────────────────────────────
   if (!rawUrl) return reply.code(400).send({ success: false, message: "url query param is required" });
 
   let targetUrl: string;
@@ -1240,7 +1246,7 @@ export const healthCheck = async (_req: FastifyRequest, reply: FastifyReply) => 
 
   return reply.code(200).send({
     status:    "ok",
-    version:   "v6.1",
+    version:   "v6.2",
     uptime:    Math.round(process.uptime()),
     circuits:  Object.fromEntries(
       Object.entries(circuitBreakers).map(([k, v]) => [k, { open: v.openUntil > Date.now(), failures: v.failures }])
