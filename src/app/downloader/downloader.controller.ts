@@ -1,5 +1,8 @@
 /**
- * download.controller.ts — v6.2 (Direct URL Priority + Tunnel Fallback)
+ * download.controller.ts — v7.0 (VidBee Fallback + Tunnel-First)
+ * - Removed Playwright
+ * - Added VidBee as Tier 4
+ * - Tunnel handles internal VidBee container routing
  */
 
 import { execFile } from "node:child_process";
@@ -14,17 +17,17 @@ import { proxyPool } from "../../Proxy/Proxy.pool.js";
 import { cookieManager } from "../../cookies/Cookie.manager.js";
 import { identityManager } from "../../manager/Identity.manager.js";
 import { getAdapter } from "../../index/index.adapter.js";
-import { extractWithPlaywright } from "../../Playwright/Playwright.extractor.js";
 import { scheduleDaily } from "../../cron/Updater.cron.js";
 import type { AttemptContext } from "../../adapter/Base.adapter.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const TUNNEL_BASE_URL  = process.env.API_URL    ?? "https://downtubebest.duckdns.org";
-const COBALT_URL = process.env.COBALT_URL ?? "http://cobalt-api:9000";
-const REDIS_URL  = process.env.REDIS_URL  ?? "";
-const NODE_ENV   = process.env.NODE_ENV   ?? "production";
-const IS_DEV     = NODE_ENV === "development";
+const COBALT_URL       = process.env.COBALT_URL  ?? "http://cobalt-api:9000";
+const VIDBEE_API_URL   = process.env.VIDBEE_API_URL ?? "http://vidbee-api:3100"; // ★ NEW
+const REDIS_URL        = process.env.REDIS_URL   ?? "";
+const NODE_ENV         = process.env.NODE_ENV    ?? "production";
+const IS_DEV           = NODE_ENV === "development";
 
 const YTDLP_MAX_AGE_DAYS = parseInt(process.env.YTDLP_MAX_AGE_DAYS ?? "7", 10);
 
@@ -219,7 +222,6 @@ const CDN_ALLOWLIST = [
   /vimeocdn\.com$/i,
   /clips-media-assets2\.twitch\.tv$/i,
   /vod-secure\.twitch\.tv$/i,
-  new RegExp(COBALT_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
 ];
 
 function isCdnAllowed(url: string): boolean {
@@ -229,7 +231,7 @@ function isCdnAllowed(url: string): boolean {
   } catch { return false; }
 }
 
-// ── NEW: Direct URL priority + Tunnel Fallback ─────────────────────────────────
+// ── Direct URL priority + Tunnel Fallback ─────────────────────────────────────
 
 interface PreparedUrls {
   directUrl: string;
@@ -239,10 +241,13 @@ interface PreparedUrls {
 
 function prepareUrls(raw: string): PreparedUrls {
   if (!raw) return { directUrl: "", tunnelUrl: null, tunnelAllowed: false };
-  const isAllowed = isCdnAllowed(raw);
+  
+  // Allow internal Docker network URLs (like VidBee) to bypass CDN check
+  const isAllowed = isCdnAllowed(raw) || raw.startsWith(VIDBEE_API_URL);
+  
   return {
-    directUrl: raw, // The raw CDN URL (Mobile apps use this to download directly)
-    tunnelUrl: isAllowed ? `${TUNNEL_BASE_URL}/tunnel?url=${encodeURIComponent(raw)}` : null, // Server proxy fallback
+    directUrl: raw,
+    tunnelUrl: isAllowed ? `${TUNNEL_BASE_URL}/tunnel?url=${encodeURIComponent(raw)}` : null,
     tunnelAllowed: isAllowed,
   };
 }
@@ -358,6 +363,7 @@ const circuitBreakers: Record<string, CBState> = {
   cobalt:    { failures: 0, openUntil: 0, halfOpen: false },
   ytdlp:     { failures: 0, openUntil: 0, halfOpen: false },
   gallerydl: { failures: 0, openUntil: 0, halfOpen: false },
+  vidbee:    { failures: 0, openUntil: 0, halfOpen: false }, // ★ NEW
 };
 
 function cbIsOpen(name: string): boolean {
@@ -401,7 +407,6 @@ function dedupe<T>(key: string, fn: () => Promise<T>): Promise<T> {
 }
 
 // ── Short URL resolver ────────────────────────────────────────────────────────
-
 
 async function resolveRedirectUrl(url: string): Promise<string> {
   const isShort = /vt\.tiktok|vm\.tiktok|pin\.it|fb\.watch|redd\.it|youtu\.be|t\.co/i.test(url);
@@ -553,15 +558,7 @@ async function getCobaltDownloadUrl(
   };
 
   if (process.env.COBALT_PROXY_ENABLED === "true") {
-    console.log("COBALT_PROXY_ENABLED", process.env.COBALT_PROXY_ENABLED)
     body.alwaysProxy = true;
-  }
-
-  if (cobaltProxy) {
-    log("debug", "cobalt", "Using proxy for request", {
-      proxy:    cobaltProxy.url.replace(/:[^@]+@/, ":***@"),
-      platform,
-    });
   }
 
   const response = await fetch(`${COBALT_URL}/`, {
@@ -781,7 +778,6 @@ async function getGalleryDlDownloadUrl(
   "--dump-json", "--no-download", "--no-part", "--retries", "3",
 ]);
 
-
   const { stdout } = await withSemaphore(async () => {
     if (signal?.aborted) throw new Error("Request aborted");
     const ac  = new AbortController();
@@ -822,6 +818,78 @@ async function getGalleryDlDownloadUrl(
   if (!directUrl) throw new Error("gallery-dl: no direct URL");
   cbSuccess("gallerydl");
   return { videoUrl: directUrl, audioUrl: null, filename, title, thumbnail };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TIER 4: VidBee API (Community yt-dlp wrapper fallback)
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface VidBeeResult {
+  videoUrl: string;
+  audioUrl: string | null;
+  title: string;
+  thumbnail: string | null;
+  ext: string;
+  filename: string;
+}
+
+async function getVidBeeDownloadUrl(
+  url: string,
+  platform: Platform,
+  quality: string,
+  signal?: AbortSignal,
+): Promise<VidBeeResult> {
+  if (cbIsOpen("vidbee")) throw new Error("[CB] VidBee circuit open");
+
+  const endpoint = `${VIDBEE_API_URL}/api/download`;
+  const timeoutSignal = AbortSignal.timeout(120_000); // 2 mins for ffmpeg muxing
+  const fetchSignal = signal ? AbortSignal.any([timeoutSignal, signal]) : timeoutSignal;
+
+  const q = quality.replace("p", "").trim();
+  const body = { url, quality: q || "720", format: "mp4" };
+
+  log("info", "vidbee", "Sending request to VidBee API", { url: url.slice(0, 80), quality: q });
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    signal: fetchSignal,
+    headers: { "Content-Type": "application/json", "Accept": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => "");
+    log("warn", "vidbee", "VidBee API failed", { status: response.status, error: errText.slice(0, 200) });
+    cbFailure("vidbee");
+    throw new Error(`VidBee API ${response.status}: ${errText.slice(0, 100)}`);
+  }
+
+  const data = await response.json();
+  const vidbeeData = data.data || data;
+
+  if (!vidbeeData.url && !vidbeeData.path && !vidbeeData.filename) {
+    cbFailure("vidbee");
+    throw new Error("VidBee: No URL, path, or filename in response");
+  }
+
+  cbSuccess("vidbee");
+
+  let videoUrl = vidbeeData.url || "";
+  if (!videoUrl && vidbeeData.path) {
+     const filename = vidbeeData.path.split("/").pop();
+     videoUrl = `${VIDBEE_API_URL}/files/${filename}`;
+  } else if (!videoUrl && vidbeeData.filename) {
+     videoUrl = `${VIDBEE_API_URL}/files/${vidbeeData.filename}`;
+  }
+
+  return {
+    videoUrl,
+    audioUrl: null,
+    title: vidbeeData.title || vidbeeData.filename?.replace(/\.[^/.]+$/, "") || "video",
+    thumbnail: vidbeeData.thumbnail || null,
+    ext: vidbeeData.filename?.split(".").pop() || "mp4",
+    filename: vidbeeData.filename || "video.mp4",
+  };
 }
 
 // ── Mime helper ───────────────────────────────────────────────────────────────
@@ -980,6 +1048,7 @@ export const getDownloadLink = async (
 
       const adapter = getAdapter(platform);
 
+      // TIER 1: COBALT
       if (adapter.useCobalt) {
         try {
           log("info", "download", "Tier 1 (Cobalt)", { url: resolvedUrl.slice(0, 80) });
@@ -1005,6 +1074,7 @@ export const getDownloadLink = async (
         }
       }
 
+      // TIER 2: YT-DLP
       if (!payload) {
         try {
           log("info", "download", "Tier 2 (yt-dlp)", { url: resolvedUrl.slice(0, 80) });
@@ -1031,6 +1101,7 @@ export const getDownloadLink = async (
         }
       }
 
+      // TIER 3: GALLERY-DL
       if (!payload && adapter.useGalleryDl) {
         try {
           log("info", "download", "Tier 3 (gallery-dl)", { url: resolvedUrl.slice(0, 80) });
@@ -1056,37 +1127,29 @@ export const getDownloadLink = async (
         }
       }
 
+      // ★ TIER 4: VIDBEE API (Replaces Playwright)
       if (!payload) {
         try {
-          log("info", "download", "Tier 4 (Playwright)", { url: resolvedUrl.slice(0, 80) });
-          const pInstance = proxyPool.pick(platform) ?? proxyPool.pick();
-          const pConfig   = pInstance ? proxyPool.playwrightProxy(pInstance) : undefined;
-
-          const res = await extractWithPlaywright({
-            url: resolvedUrl, platform,
-            proxy: pConfig,
-            signal: clientDisconnectController.signal,
-          });
-
-          if (!res?.videoUrl) throw new Error("Playwright: no media captured");
-          if (pInstance) proxyPool.success(pInstance);
-
+          log("info", "download", "Tier 4 (VidBee)", { url: resolvedUrl.slice(0, 80) });
+          const res = await getVidBeeDownloadUrl(
+            resolvedUrl, platform, quality, clientDisconnectController.signal,
+          );
           const urls = prepareUrls(res.videoUrl);
           payload = {
             url:          urls.directUrl,
             tunnelUrl:    urls.tunnelUrl,
             audioUrl:     null,
             audioTunnelUrl: null,
-            title:        res.title     ?? "downloaded_video",
-            thumbnail:    res.thumbnail ?? null,
+            title:        res.title,
+            thumbnail:    res.thumbnail,
             duration:     0,
-            ext:          "mp4",
-            mimeType:     guessMime("video.mp4"),
+            ext:          res.ext,
+            mimeType:     guessMime(res.filename),
             tunnelAllowed: urls.tunnelAllowed,
           };
-          usedTier = "playwright";
+          usedTier = "vidbee";
         } catch (err: any) {
-          log("error", "download", "Tier 4 (Playwright) failed", { error: err.message });
+          log("warn", "download", "Tier 4 (VidBee) failed", { error: err.message });
         }
       }
 
@@ -1135,7 +1198,7 @@ export const resolveUrl = async (
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. TUNNEL
+// 4. TUNNEL (Handles External CDNs + Internal VidBee routing)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const tunnel = async (req: FastifyRequest, reply: FastifyReply) => {
@@ -1151,7 +1214,7 @@ export const tunnel = async (req: FastifyRequest, reply: FastifyReply) => {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
           "Accept": "*/*",
         },
-        signal: AbortSignal.timeout(60_000) 
+        signal: AbortSignal.timeout(120_000) // Increased for large Cobalt streams
       });
       
       if (!upstream.ok && upstream.status !== 206) {
@@ -1186,7 +1249,10 @@ export const tunnel = async (req: FastifyRequest, reply: FastifyReply) => {
   if (!/^https?:\/\//i.test(targetUrl))
     return reply.code(400).send({ success: false, message: "Invalid tunnel target URL" });
 
-  if (!isCdnAllowed(targetUrl)) {
+  // ★ Allow internal Docker traffic from VidBee to bypass external CDN check
+  const isInternalVidBee = targetUrl.startsWith(VIDBEE_API_URL);
+  
+  if (!isCdnAllowed(targetUrl) && !isInternalVidBee) {
     log("warn", "tunnel", "Blocked non-CDN URL", { url: targetUrl.slice(0, 120) });
     return reply.code(403).send({ success: false, message: "Tunnel target not allowed" });
   }
@@ -1198,13 +1264,18 @@ export const tunnel = async (req: FastifyRequest, reply: FastifyReply) => {
     "Accept-Encoding": "identity",
   };
   if (rangeHeader) upstreamHeaders["Range"] = rangeHeader;
-  const referer = getReferer(targetUrl);
-  if (referer) upstreamHeaders["Referer"] = referer;
+  
+  // ★ Don't apply Referer logic to internal Docker network requests
+  if (!isInternalVidBee) {
+    const referer = getReferer(targetUrl);
+    if (referer) upstreamHeaders["Referer"] = referer;
+  }
 
   try {
-    const upstream = await fetch(targetUrl, { headers: upstreamHeaders, signal: AbortSignal.timeout(60_000) });
+    // Increased timeout for large VidBee files or slow CDNs
+    const upstream = await fetch(targetUrl, { headers: upstreamHeaders, signal: AbortSignal.timeout(180_000) });
     if (!upstream.ok && upstream.status !== 206) {
-      log("error", "tunnel", "Upstream error", { status: upstream.status });
+      log("error", "tunnel", "Upstream error", { status: upstream.status, isInternalVidBee });
       return reply.code(502).send({ success: false, message: `Upstream returned ${upstream.status}` });
     }
     reply.status(upstream.status);
@@ -1236,6 +1307,10 @@ export const healthCheck = async (_req: FastifyRequest, reply: FastifyReply) => 
   const cobaltOk = await fetch(`${COBALT_URL}/`, { method: "HEAD", signal: AbortSignal.timeout(3_000) })
     .then(() => true).catch(() => false);
 
+  // ★ Check VidBee health
+  const vidbeeOk = await fetch(`${VIDBEE_API_URL}/`, { method: "HEAD", signal: AbortSignal.timeout(3_000) })
+    .then(() => true).catch(() => false);
+
   let ytdlpAgeDays: number | null = null;
   try {
     const { stdout } = await execFilePromise("which", ["yt-dlp"], { encoding: "utf8" });
@@ -1246,12 +1321,13 @@ export const healthCheck = async (_req: FastifyRequest, reply: FastifyReply) => 
 
   return reply.code(200).send({
     status:    "ok",
-    version:   "v6.2",
+    version:   "v7.0",
     uptime:    Math.round(process.uptime()),
     circuits:  Object.fromEntries(
       Object.entries(circuitBreakers).map(([k, v]) => [k, { open: v.openUntil > Date.now(), failures: v.failures }])
     ),
     cobalt:    { reachable: cobaltReachable, ping: cobaltOk },
+    vidbee:    { reachable: vidbeeOk }, // ★ NEW
     semaphore: { running: procSemaphore.runningCount, queued: procSemaphore.queueDepth, max: MAX_CONCURRENT_PROCS },
     cache:     { backend: REDIS_URL ? "redis" : "memory", entries: cache.size() },
     proxies:   proxyPool.stats(),

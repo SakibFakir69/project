@@ -1,4 +1,5 @@
 # docker-compose.yml  —  Production-hardened video downloader stack
+# Includes: App, Cobalt (Tier 1), VidBee (Tier 4), Watchtower
 
 version: "3.9"
 
@@ -8,9 +9,12 @@ networks:
 
 volumes:
   cobalt_tmp: {}
+  vidbee-downloads: {}  # Persistent storage for VidBee muxed video files
+  vidbee-data: {}      # Persistent storage for VidBee SQLite database
 
 services:
 
+  # ─── MAIN BACKEND API ──────────────────────────────────────────────────────
   app:
     build:
       context: .
@@ -21,13 +25,16 @@ services:
     env_file:
       - .env
     environment:
-      NODE_ENV:   production
-      COBALT_URL: "http://cobalt-api:9000"
+      NODE_ENV:       production
+      COBALT_URL:     "http://cobalt-api:9000"    # Tier 1 internal URL
+      VIDBEE_API_URL: "http://vidbee-api:3100"    # Tier 4 internal URL
     networks:
       - internal
     depends_on:
       cobalt-api:
         condition: service_healthy
+      vidbee-api:
+        condition: service_started
     deploy:
       resources:
         limits:
@@ -52,6 +59,7 @@ services:
         max-size: "50m"
         max-file: "5"
 
+  # ─── TIER 1: COBALT ────────────────────────────────────────────────────────
   cobalt-api:
     image: ghcr.io/imputnet/cobalt:latest
     restart: unless-stopped
@@ -92,10 +100,47 @@ services:
         max-size: "30m"
         max-file: "3"
 
+  # ─── TIER 4: VIDBEE API ───────────────────────────────────────────────────
+  vidbee-api:
+    image: ghcr.io/nexmoe/vidbee-api:latest
+    restart: unless-stopped
+    expose:
+      - "3100"
+    networks:
+      - internal
+    environment:
+      VIDBEE_API_HOST:           "0.0.0.0"
+      VIDBEE_API_PORT:           "3100"
+      VIDBEE_DOWNLOAD_DIR:       "/data/downloads"
+      VIDBEE_HISTORY_STORE_PATH: "/data/vidbee/vidbee.db"
+    volumes:
+      - vidbee-downloads:/data/downloads
+      - vidbee-data:/data/vidbee
+    deploy:
+      resources:
+        limits:
+          cpus:   "1.5"     # FFmpeg muxing requires decent CPU
+          memory: "1G"      # High-res video processing needs RAM
+        reservations:
+          cpus:   "0.25"
+          memory: "256M"
+    healthcheck:
+      test:     ["CMD", "wget", "--spider", "-q", "http://localhost:3100/"]
+      interval: 30s
+      timeout:  10s
+      retries:  3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "30m"
+        max-file: "3"
+
+  # ─── AUTO-UPDATER ──────────────────────────────────────────────────────────
   watchtower:
     image: containrrr/watchtower:latest
     environment:
-       - DOCKER_API_VERSION=1.40   # ← ADD THIS
+       - DOCKER_API_VERSION=1.40   # Fixes the API version error from your logs
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
