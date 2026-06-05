@@ -94,6 +94,8 @@ services:
 
   watchtower:
     image: containrrr/watchtower:latest
+    environment:
+       - DOCKER_API_VERSION=1.40   # ← ADD THIS
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
