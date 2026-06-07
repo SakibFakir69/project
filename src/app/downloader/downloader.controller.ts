@@ -28,12 +28,12 @@ import type { AttemptContext } from "../../adapter/Base.adapter.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const TUNNEL_BASE_URL  = process.env.API_URL    ?? "https://downtubebest.duckdns.org";
-const COBALT_URL       = process.env.COBALT_URL  ?? "http://cobalt-api:9000";
-const VIDBEE_API_URL   = process.env.VIDBEE_API_URL ?? "http://vidbee-api:3100"; // ★ NEW
-const REDIS_URL        = process.env.REDIS_URL   ?? "";
-const NODE_ENV         = process.env.NODE_ENV    ?? "production";
-const IS_DEV           = NODE_ENV === "development";
+const TUNNEL_BASE_URL = process.env.API_URL ?? "https://downtubebest.duckdns.org";
+const COBALT_URL = process.env.COBALT_URL ?? "http://cobalt-api:9000";
+const VIDBEE_API_URL = process.env.VIDBEE_API_URL ?? "http://vidbee-api:3100"; // ★ NEW
+const REDIS_URL = process.env.REDIS_URL ?? "";
+const NODE_ENV = process.env.NODE_ENV ?? "production";
+const IS_DEV = NODE_ENV === "development";
 
 const YTDLP_MAX_AGE_DAYS = parseInt(process.env.YTDLP_MAX_AGE_DAYS ?? "7", 10);
 
@@ -41,7 +41,7 @@ const execFilePromise = promisify(execFile);
 
 const EXEC_OPTS = {
   killSignal: "SIGKILL" as const,
-  maxBuffer:  8 * 1024 * 1024,
+  maxBuffer: 8 * 1024 * 1024,
 };
 
 scheduleDaily();
@@ -63,24 +63,24 @@ export const RATE_LIMIT_OPTIONS = {
 interface VideoInfoBody { url: string; }
 interface DownloadBody {
   url: string;
-  type?:        DownloadType;
-  quality?:     VideoQuality;
+  type?: DownloadType;
+  quality?: VideoQuality;
   audioFormat?: AudioFormat;
 }
 
 interface YtDlpFormat {
-  url?:    string;
+  url?: string;
   vcodec?: string;
   acodec?: string;
 }
 
 interface YtDlpMeta {
   requested_formats?: YtDlpFormat[];
-  url?:       string;
-  title?:     string;
+  url?: string;
+  title?: string;
   thumbnail?: string;
-  duration?:  number;
-  ext?:       string;
+  duration?: number;
+  ext?: string;
 }
 
 // ── Structured JSON logger ────────────────────────────────────────────────────
@@ -90,7 +90,7 @@ type LogLevel = "info" | "warn" | "error" | "debug";
 function log(level: LogLevel, service: string, msg: string, extra?: Record<string, any>) {
   const entry = { ts: new Date().toISOString(), level, service, msg, ...extra };
   if (level === "error") process.stderr.write(JSON.stringify(entry) + "\n");
-  else                   process.stdout.write(JSON.stringify(entry) + "\n");
+  else process.stdout.write(JSON.stringify(entry) + "\n");
 }
 
 // ── Cache ─────────────────────────────────────────────────────────────────────
@@ -105,9 +105,9 @@ interface ICache {
 interface MemEntry { value: any; expiresAt: number; }
 
 class MemoryCache implements ICache {
-  private map     = new Map<string, MemEntry>();
+  private map = new Map<string, MemEntry>();
   private maxSize = 300;
-  private _size   = 0;
+  private _size = 0;
 
   async get(key: string): Promise<any | null> {
     const e = this.map.get(key);
@@ -177,14 +177,14 @@ if (REDIS_URL) {
 }
 
 const PLATFORM_TTL_MS: Record<string, number> = {
-  youtube:   6 * 60 * 60_000,
-  vimeo:     4 * 60 * 60_000,
-  reddit:    2 * 60 * 60_000,
-  twitter:   1 * 60 * 60_000,
-  tiktok:   45 * 60_000,
+  youtube: 6 * 60 * 60_000,
+  vimeo: 4 * 60 * 60_000,
+  reddit: 2 * 60 * 60_000,
+  twitter: 1 * 60 * 60_000,
+  tiktok: 10 * 60_000,
   instagram: 45 * 60_000,
-  facebook:  30 * 60_000,
-  generic:   60 * 60_000,
+  facebook: 30 * 60_000,
+  generic: 60 * 60_000,
 };
 
 function cacheTtl(platform: string): number {
@@ -218,7 +218,7 @@ const CDN_ALLOWLIST = [
   /tiktokcdn\.com$/i,
   /tiktokcdn-us\.com$/i,
   /tiktok\.com\/aweme\/v\d+\/play/i,
-   /\.tiktok\.com$/i,  
+  /\.tiktok\.com$/i,
   /fbcdn\.net$/i,
   /cdninstagram\.com$/i,
   /twimg\.com$/i,
@@ -247,10 +247,10 @@ interface PreparedUrls {
 
 function prepareUrls(raw: string): PreparedUrls {
   if (!raw) return { directUrl: "", tunnelUrl: null, tunnelAllowed: false };
-  
+
   // Allow internal Docker network URLs (like VidBee) to bypass CDN check
   const isAllowed = isCdnAllowed(raw) || raw.startsWith(VIDBEE_API_URL);
-  
+
   return {
     directUrl: raw,
     tunnelUrl: isAllowed ? `${TUNNEL_BASE_URL}/tunnel?url=${encodeURIComponent(raw)}` : null,
@@ -266,8 +266,8 @@ const MAX_QUEUE_DEPTH = 50;
 class Semaphore {
   private running = 0;
   private queue: Array<() => void> = [];
-  constructor(private limit: number) {}
-  get queueDepth():  number { return this.queue.length; }
+  constructor(private limit: number) { }
+  get queueDepth(): number { return this.queue.length; }
   get runningCount(): number { return this.running; }
   acquire(): Promise<void> {
     if (this.running < this.limit) { this.running++; return Promise.resolve(); }
@@ -310,20 +310,20 @@ setInterval(probeCobalt, 2 * 60_000);
 
 type Platform =
   | "youtube" | "tiktok" | "instagram" | "twitter"
-  | "reddit"  | "facebook" | "pinterest" | "tumblr"
-  | "vimeo"   | "twitch"   | "generic";
+  | "reddit" | "facebook" | "pinterest" | "tumblr"
+  | "vimeo" | "twitch" | "generic";
 
 function detectPlatform(url: string): Platform {
-  if (/youtube\.com|youtu\.be/i.test(url))           return "youtube";
+  if (/youtube\.com|youtu\.be/i.test(url)) return "youtube";
   if (/tiktok\.com|vm\.tiktok|vt\.tiktok/i.test(url)) return "tiktok";
-  if (/instagram\.com/i.test(url))                    return "instagram";
-  if (/twitter\.com|x\.com/i.test(url))               return "twitter";
-  if (/reddit\.com|redd\.it/i.test(url))              return "reddit";
-  if (/facebook\.com|fb\.watch/i.test(url))           return "facebook";
-  if (/pinterest\.com|pin\.it/i.test(url))            return "pinterest";
-  if (/tumblr\.com/i.test(url))                       return "tumblr";
-  if (/vimeo\.com/i.test(url))                        return "vimeo";
-  if (/twitch\.tv|clips\.twitch\.tv/i.test(url))      return "twitch";
+  if (/instagram\.com/i.test(url)) return "instagram";
+  if (/twitter\.com|x\.com/i.test(url)) return "twitter";
+  if (/reddit\.com|redd\.it/i.test(url)) return "reddit";
+  if (/facebook\.com|fb\.watch/i.test(url)) return "facebook";
+  if (/pinterest\.com|pin\.it/i.test(url)) return "pinterest";
+  if (/tumblr\.com/i.test(url)) return "tumblr";
+  if (/vimeo\.com/i.test(url)) return "vimeo";
+  if (/twitch\.tv|clips\.twitch\.tv/i.test(url)) return "twitch";
   return "generic";
 }
 
@@ -336,40 +336,40 @@ export interface ClassifiedError {
 function classifyError(raw: string): ClassifiedError {
   const s = (raw ?? "").toLowerCase();
   if (s.includes("429") || s.includes("rate limit") || s.includes("too many requests"))
-    return { message: "Rate limit hit — try again in a few minutes", retryable: true,  statusCode: 429, category: "rate_limit" };
+    return { message: "Rate limit hit — try again in a few minutes", retryable: true, statusCode: 429, category: "rate_limit" };
   if (s.includes("private") || s.includes("login required") || s.includes("age-restricted"))
-    return { message: "Video is private or requires login",          retryable: false, statusCode: 403, category: "auth" };
+    return { message: "Video is private or requires login", retryable: false, statusCode: 403, category: "auth" };
   if (s.includes("unavailable") || s.includes("not found") || s.includes("404") || s.includes("deleted"))
-    return { message: "Video is unavailable or removed",            retryable: false, statusCode: 404, category: "not_found" };
+    return { message: "Video is unavailable or removed", retryable: false, statusCode: 404, category: "not_found" };
   if (s.includes("geo") || s.includes("not available in your country"))
-    return { message: "Video is geo-restricted",                    retryable: false, statusCode: 451, category: "geo" };
+    return { message: "Video is geo-restricted", retryable: false, statusCode: 451, category: "geo" };
   if (s.includes("copyright") || s.includes("dmca"))
-    return { message: "Video is blocked due to copyright",          retryable: false, statusCode: 403, category: "copyright" };
+    return { message: "Video is blocked due to copyright", retryable: false, statusCode: 403, category: "copyright" };
   if (s.includes("network") || s.includes("timeout") || s.includes("connection") ||
-      s.includes("502") || s.includes("503") || s.includes("504"))
-    return { message: "Network error — retrying",                   retryable: true,  statusCode: 503, category: "network" };
+    s.includes("502") || s.includes("503") || s.includes("504"))
+    return { message: "Network error — retrying", retryable: true, statusCode: 503, category: "network" };
   if (s.includes("nsig") || s.includes("player") || s.includes("signature") ||
-      s.includes("bot") || s.includes("automated") || s.includes("potoken"))
+    s.includes("bot") || s.includes("automated") || s.includes("potoken"))
     return { message: "YouTube player error — yt-dlp may need updating", retryable: false, statusCode: 500, category: "player" };
   if (s.includes("no video formats") || s.includes("format is not available"))
-    return { message: "No matching video format",                   retryable: true,  statusCode: 500, category: "format" };
+    return { message: "No matching video format", retryable: true, statusCode: 500, category: "format" };
   if (s.includes("no space") || s.includes("out of memory"))
-    return { message: "Server resource error",                      retryable: false, statusCode: 500, category: "resource" };
-  return   { message: "Failed to process video URL",                retryable: false, statusCode: 500, category: "unknown" };
+    return { message: "Server resource error", retryable: false, statusCode: 500, category: "resource" };
+  return { message: "Failed to process video URL", retryable: false, statusCode: 500, category: "unknown" };
 }
 
 // ── Circuit breakers ──────────────────────────────────────────────────────────
 
 interface CBState { failures: number; openUntil: number; halfOpen: boolean; }
 
-const CB_THRESHOLD  = 5;
+const CB_THRESHOLD = 5;
 const CB_COOLDOWN_MS = 30_000;
 
 const circuitBreakers: Record<string, CBState> = {
-  cobalt:    { failures: 0, openUntil: 0, halfOpen: false },
-  ytdlp:     { failures: 0, openUntil: 0, halfOpen: false },
+  cobalt: { failures: 0, openUntil: 0, halfOpen: false },
+  ytdlp: { failures: 0, openUntil: 0, halfOpen: false },
   gallerydl: { failures: 0, openUntil: 0, halfOpen: false },
-  vidbee:    { failures: 0, openUntil: 0, halfOpen: false }, // ★ NEW
+  vidbee: { failures: 0, openUntil: 0, halfOpen: false }, // ★ NEW
 };
 
 function cbIsOpen(name: string): boolean {
@@ -427,13 +427,13 @@ async function resolveRedirectUrl(url: string): Promise<string> {
         "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
       },
     });
-    
+
     res.body?.cancel();
 
     const resolved = res.url || url;
     if (resolved !== url)
       log("debug", "resolver", "Resolved redirect", { from: url.slice(0, 80), to: resolved.slice(0, 120) });
-    
+
     return resolved;
   } catch {
     return url;
@@ -448,8 +448,8 @@ function buildAttemptContext(
   attemptIndex: number,
   signal?: AbortSignal,
 ): AttemptContext {
-  const proxy    = proxyPool.pickByIndex(attemptIndex, platform);
-  const cookie   = cookieManager.byIndex(platform as any, attemptIndex);
+  const proxy = proxyPool.pickByIndex(attemptIndex, platform);
+  const cookie = cookieManager.byIndex(platform as any, attemptIndex);
   const identity = identityManager.forAttempt(attemptIndex);
   return { attemptIndex, proxy, cookiePath: cookie, identity, signal };
 }
@@ -496,11 +496,11 @@ function buildGalleryDlArgs(
   ctx: AttemptContext,
   extra: string[],
 ): string[] {
-  const adapter  = getAdapter(platform);
+  const adapter = getAdapter(platform);
   const proxyStr = ctx.proxy?.url ?? null;
   return [
     "--no-mtime", "--filename", "{id}.{extension}",
-    ...(proxyStr     ? ["--proxy",   proxyStr]       : []),
+    ...(proxyStr ? ["--proxy", proxyStr] : []),
     ...(ctx.cookiePath ? ["--cookies", ctx.cookiePath] : []),
     ...adapter.galleryDlPlatformArgs(ctx),
     ...extra,
@@ -513,15 +513,15 @@ function buildGalleryDlArgs(
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface CobaltApiResponse {
-  status?:        "tunnel" | "redirect" | "picker" | "error" | "local-processing";
-  url?:           string;
-  filename?:      string;
-  audio?:         string;
+  status?: "tunnel" | "redirect" | "picker" | "error" | "local-processing";
+  url?: string;
+  filename?: string;
+  audio?: string;
   audioFilename?: string;
-  picker?:        Array<{ type: string; url: string; thumb?: string }>;
-  tunnel?:        string[];
-  output?:        { filename: string; type: string; metadata?: Record<string, string> };
-  error?:         { code: string; context?: { service?: string; limit?: number } };
+  picker?: Array<{ type: string; url: string; thumb?: string }>;
+  tunnel?: string[];
+  output?: { filename: string; type: string; metadata?: Record<string, string> };
+  error?: { code: string; context?: { service?: string; limit?: number } };
 }
 
 interface CobaltResult {
@@ -530,37 +530,37 @@ interface CobaltResult {
 
 async function getCobaltDownloadUrl(
   resolvedUrl: string,
-  quality:      string = "1080",
-  platform:     Platform,
+  quality: string = "1080",
+  platform: Platform,
   downloadMode: "auto" | "audio" | "mute" = "auto",
-  signal?:      AbortSignal,
+  signal?: AbortSignal,
 ): Promise<CobaltResult> {
 
   if (!cobaltReachable) throw new Error("[Cobalt] Unreachable");
   if (cbIsOpen("cobalt")) throw new Error("[CB] Cobalt circuit open");
 
-  try { resolvedUrl = decodeURIComponent(resolvedUrl).trim(); } catch {}
+  try { resolvedUrl = decodeURIComponent(resolvedUrl).trim(); } catch { }
   if (!/^https?:\/\//i.test(resolvedUrl)) throw new Error("Invalid URL");
 
-  const q        = quality.replace("p", "").trim();
-  const validQ   = ["max","4320","2160","1440","1080","720","480","360","240","144"];
+  const q = quality.replace("p", "").trim();
+  const validQ = ["max", "4320", "2160", "1440", "1080", "720", "480", "360", "240", "144"];
   const videoQuality = validQ.includes(q) ? q : "1080";
   const isTikTok = platform === "tiktok";
 
   const cobaltProxy = proxyPool.pick(platform) ?? proxyPool.pick();
 
   const timeoutSignal = AbortSignal.timeout(25_000);
-  const fetchSignal   = signal ? AbortSignal.any([timeoutSignal, signal]) : timeoutSignal;
+  const fetchSignal = signal ? AbortSignal.any([timeoutSignal, signal]) : timeoutSignal;
 
   const body: Record<string, any> = {
-    url:               resolvedUrl,
+    url: resolvedUrl,
     videoQuality,
     downloadMode,
-    filenameStyle:     "basic",
-    audioFormat:       "mp3",
-    audioBitrate:      "128",
+    filenameStyle: "basic",
+    audioFormat: "mp3",
+    audioBitrate: "128",
     youtubeVideoCodec: "h264",
-    tiktokFullAudio:   isTikTok && downloadMode === "audio",
+    tiktokFullAudio: isTikTok && downloadMode === "audio",
   };
 
   if (process.env.COBALT_PROXY_ENABLED === "true") {
@@ -568,11 +568,11 @@ async function getCobaltDownloadUrl(
   }
 
   const response = await fetch(`${COBALT_URL}/`, {
-    method:  "POST",
-    signal:  fetchSignal,
+    method: "POST",
+    signal: fetchSignal,
     headers: {
       "Content-Type": "application/json",
-      "Accept":       "application/json",
+      "Accept": "application/json",
     },
     body: JSON.stringify(body),
   });
@@ -582,11 +582,11 @@ async function getCobaltDownloadUrl(
     try { err = await response.json(); } catch { err = await response.text(); }
 
     log("warn", "cobalt", "request_failed", {
-      status:   response.status,
-      error:    err,
+      status: response.status,
+      error: err,
       platform,
-      url:      resolvedUrl.slice(0, 80),
-      body:     JSON.stringify(body).slice(0, 200),
+      url: resolvedUrl.slice(0, 80),
+      body: JSON.stringify(body).slice(0, 200),
     });
 
     if (cobaltProxy) proxyPool.failure(cobaltProxy, platform, response.status === 429);
@@ -608,20 +608,20 @@ async function getCobaltDownloadUrl(
     case "local-processing":
       cbSuccess("cobalt");
       return {
-        url:      data.tunnel?.[0] ?? "",
+        url: data.tunnel?.[0] ?? "",
         audioUrl: data.tunnel?.[1] ?? null,
         filename: data.output?.filename ?? "video.mp4",
-        type:     "local-processing",
+        type: "local-processing",
       };
 
     case "picker":
       cbSuccess("cobalt");
       const bestVideo = data.picker?.find(p => p.type === "video") ?? data.picker?.[0];
       return {
-        url:      bestVideo?.url ?? "",
+        url: bestVideo?.url ?? "",
         audioUrl: (data as any).audio ?? null,
         filename: (data as any).audioFilename ?? "video.mp4",
-        type:     "picker",
+        type: "picker",
       };
 
     case "error":
@@ -644,25 +644,25 @@ interface YtDlpResult {
 }
 
 async function getYtDlpWithMutation(
-  url:      string,
+  url: string,
   platform: Platform,
-  quality:  string,
-  signal?:  AbortSignal,
+  quality: string,
+  signal?: AbortSignal,
 ): Promise<YtDlpResult> {
   if (cbIsOpen("ytdlp")) throw new Error("[CB] yt-dlp circuit open");
 
-  const adapter    = getAdapter(platform);
+  const adapter = getAdapter(platform);
   const strategies = adapter.formatStrategies;
   let lastErr: any;
 
   for (let attempt = 0; attempt < adapter.maxAttempts; attempt++) {
-    const ctx      = buildAttemptContext(url, platform, attempt, signal);
+    const ctx = buildAttemptContext(url, platform, attempt, signal);
     const strategy = strategies[attempt % strategies.length];
 
     log("info", "ytdlp", `Attempt ${attempt + 1}/${adapter.maxAttempts}`, {
-      client:   ctx.identity.clientName,
-      proxy:    ctx.proxy ? ctx.proxy.url.replace(/:[^@]+@/, ":***@") : "none",
-      cookie:   ctx.cookiePath ? "yes" : "no",
+      client: ctx.identity.clientName,
+      proxy: ctx.proxy ? ctx.proxy.url.replace(/:[^@]+@/, ":***@") : "none",
+      cookie: ctx.cookiePath ? "yes" : "no",
       strategy: strategy.slice(0, 50),
     });
 
@@ -675,7 +675,7 @@ async function getYtDlpWithMutation(
     try {
       const { stdout } = await withSemaphore(async () => {
         if (signal?.aborted) throw new Error("Request aborted");
-        const ac  = new AbortController();
+        const ac = new AbortController();
         const tid = setTimeout(() => ac.abort(), TIMEOUTS.url ?? 60_000);
         if (signal) signal.addEventListener("abort", () => ac.abort(), { once: true });
         try {
@@ -704,17 +704,17 @@ async function getYtDlpWithMutation(
 
       if (!videoUrl) throw new Error("yt-dlp: no video URL in output");
 
-      if (ctx.proxy)     proxyPool.success(ctx.proxy);
+      if (ctx.proxy) proxyPool.success(ctx.proxy);
       if (ctx.cookiePath) cookieManager.markSuccess(platform as any, ctx.cookiePath);
 
       cbSuccess("ytdlp");
       log("info", "ytdlp", `Success on attempt ${attempt + 1}`, { strategy: attempt });
       return {
         videoUrl, audioUrl,
-        title:       meta.title     ?? "video",
-        thumbnail:   meta.thumbnail ?? null,
-        duration:    meta.duration  ?? 0,
-        ext:         meta.ext       ?? "mp4",
+        title: meta.title ?? "video",
+        thumbnail: meta.thumbnail ?? null,
+        duration: meta.duration ?? 0,
+        ext: meta.ext ?? "mp4",
         strategyUsed: attempt,
       };
 
@@ -727,7 +727,7 @@ async function getYtDlpWithMutation(
 
       log("warn", "ytdlp", `Attempt ${attempt + 1} failed`, {
         category: c.category,
-        error:    err?.message?.slice(0, 100),
+        error: err?.message?.slice(0, 100),
       });
 
       if (c.category === "rate_limit" || c.category === "network" || c.statusCode >= 500)
@@ -744,10 +744,10 @@ async function getYtDlpWithMutation(
 }
 
 async function getYtDlpInfo(
-  url:      string,
+  url: string,
   platform: Platform,
 ): Promise<{ title: string; thumbnail: string | null; duration: number; ext: string }> {
-  const ctx  = buildAttemptContext(url, platform, 0);
+  const ctx = buildAttemptContext(url, platform, 0);
   const args = buildYtDlpArgs(url, platform, ctx, ["--dump-json", "--skip-download", "--no-playlist"]);
 
   const { stdout } = await withSemaphore(() =>
@@ -772,21 +772,21 @@ interface GalleryDlResult {
 }
 
 async function getGalleryDlDownloadUrl(
-  url:      string,
+  url: string,
   platform: Platform,
-  signal?:  AbortSignal,
+  signal?: AbortSignal,
 ): Promise<GalleryDlResult> {
   if (cbIsOpen("gallerydl")) throw new Error("[CB] gallery-dl circuit open");
 
-  const ctx  = buildAttemptContext(url, platform, 0, signal);
+  const ctx = buildAttemptContext(url, platform, 0, signal);
 
   const args = buildGalleryDlArgs(url, platform, ctx, [
-  "--dump-json", "--no-download", "--no-part", "--retries", "3",
-]);
+    "--dump-json", "--no-download", "--no-part", "--retries", "3",
+  ]);
 
   const { stdout } = await withSemaphore(async () => {
     if (signal?.aborted) throw new Error("Request aborted");
-    const ac  = new AbortController();
+    const ac = new AbortController();
     const tid = setTimeout(() => ac.abort(), TIMEOUTS.gallerydl ?? 45_000);
     if (signal) signal.addEventListener("abort", () => ac.abort(), { once: true });
     try { return await execFilePromise("gallery-dl", args, { ...EXEC_OPTS, signal: ac.signal as any }); }
@@ -812,12 +812,12 @@ async function getGalleryDlDownloadUrl(
 
   if (typeof meta === "string") {
     directUrl = meta;
-    filename  = meta.split("/").pop()?.split("?")[0] ?? "video.mp4";
-    title     = filename.replace(/\.[^/.]+$/, "");
+    filename = meta.split("/").pop()?.split("?")[0] ?? "video.mp4";
+    title = filename.replace(/\.[^/.]+$/, "");
   } else {
     directUrl = meta.url ?? meta._url ?? "";
-    filename  = meta.filename ?? `${meta.id ?? "video"}.${meta.extension ?? "mp4"}`;
-    title     = meta.title ?? meta.description?.slice(0, 100) ?? filename;
+    filename = meta.filename ?? `${meta.id ?? "video"}.${meta.extension ?? "mp4"}`;
+    title = meta.title ?? meta.description?.slice(0, 100) ?? filename;
     thumbnail = meta.thumbnail ?? null;
   }
 
@@ -882,10 +882,10 @@ async function getVidBeeDownloadUrl(
 
   let videoUrl = vidbeeData.url || "";
   if (!videoUrl && vidbeeData.path) {
-     const filename = vidbeeData.path.split("/").pop();
-     videoUrl = `${VIDBEE_API_URL}/files/${filename}`;
+    const filename = vidbeeData.path.split("/").pop();
+    videoUrl = `${VIDBEE_API_URL}/files/${filename}`;
   } else if (!videoUrl && vidbeeData.filename) {
-     videoUrl = `${VIDBEE_API_URL}/files/${vidbeeData.filename}`;
+    videoUrl = `${VIDBEE_API_URL}/files/${vidbeeData.filename}`;
   }
 
   return {
@@ -914,7 +914,7 @@ function guessMime(filename: string): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getVideoInfo = async (
-  req:   FastifyRequest<{ Body: VideoInfoBody }>,
+  req: FastifyRequest<{ Body: VideoInfoBody }>,
   reply: FastifyReply,
 ) => {
   const { url } = req.body;
@@ -944,10 +944,10 @@ export const getVideoInfo = async (
           return {
             source: "cobalt" as const,
             data: {
-              title:     res.filename?.replace(/\.[^/.]+$/, "") ?? `Video from ${platform}`,
+              title: res.filename?.replace(/\.[^/.]+$/, "") ?? `Video from ${platform}`,
               thumbnail: null,
-              duration:  0,
-              ext:       res.filename?.split(".").pop() ?? "mp4",
+              duration: 0,
+              ext: res.filename?.split(".").pop() ?? "mp4",
             },
           };
         }
@@ -971,10 +971,10 @@ export const getVideoInfo = async (
         return {
           source: "ytdlp" as const,
           data: {
-            title:     res.title,
+            title: res.title,
             thumbnail: res.thumbnail,
-            duration:  res.duration,
-            ext:       res.ext,
+            duration: res.duration,
+            ext: res.ext,
           },
         };
       }
@@ -989,22 +989,22 @@ export const getVideoInfo = async (
     await cache.set(cacheKey, result.data, 15 * 60_000);
     return reply.code(200).send({
       success: true,
-      source:  result.source,
+      source: result.source,
       message: "Fetch video info successful",
-      data:    result.data,
+      data: result.data,
     });
   }
 
   log("warn", "info", "All info tiers failed — returning soft fail", { url: resolvedUrl.slice(0, 80) });
   return reply.code(200).send({
     success: true,
-    source:  "unknown",
+    source: "unknown",
     message: "Info unavailable, but download might work",
     data: {
-      title:     `Video from ${platform}`,
+      title: `Video from ${platform}`,
       thumbnail: null,
-      duration:  0,
-      ext:       "mp4",
+      duration: 0,
+      ext: "mp4",
     },
   });
 };
@@ -1014,7 +1014,7 @@ export const getVideoInfo = async (
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const getDownloadLink = async (
-  req:   FastifyRequest<{ Body: DownloadBody }>,
+  req: FastifyRequest<{ Body: DownloadBody }>,
   reply: FastifyReply,
 ) => {
   const { url, type = "video", quality = "720p", audioFormat = "mp3" } = req.body;
@@ -1046,7 +1046,7 @@ export const getDownloadLink = async (
 
   try {
     const finalResult = await dedupe(cacheKey, async () => {
-      let payload:  any    = null;
+      let payload: any = null;
       let usedTier: string = "unknown";
 
       if (clientDisconnectController.signal.aborted)
@@ -1063,15 +1063,15 @@ export const getDownloadLink = async (
           );
           const urls = prepareUrls(res.url);
           payload = {
-            url:          urls.directUrl,
-            tunnelUrl:    urls.tunnelUrl,
-            audioUrl:     res.audioUrl ? prepareUrls(res.audioUrl).directUrl : null,
+            url: urls.directUrl,
+            tunnelUrl: urls.tunnelUrl,
+            audioUrl: res.audioUrl ? prepareUrls(res.audioUrl).directUrl : null,
             audioTunnelUrl: res.audioUrl ? prepareUrls(res.audioUrl).tunnelUrl : null,
-            title:        res.filename.replace(/\.[^/.]+$/, ""),
-            thumbnail:    null,
-            duration:     0,
-            ext:          res.filename.split(".").pop() ?? "mp4",
-            mimeType:     guessMime(res.filename),
+            title: res.filename.replace(/\.[^/.]+$/, ""),
+            thumbnail: null,
+            duration: 0,
+            ext: res.filename.split(".").pop() ?? "mp4",
+            mimeType: guessMime(res.filename),
             tunnelAllowed: urls.tunnelAllowed,
           };
           usedTier = "cobalt";
@@ -1089,15 +1089,15 @@ export const getDownloadLink = async (
           );
           const urls = prepareUrls(res.videoUrl);
           payload = {
-            url:          urls.directUrl,
-            tunnelUrl:    urls.tunnelUrl,
-            audioUrl:     res.audioUrl ? prepareUrls(res.audioUrl).directUrl : null,
+            url: urls.directUrl,
+            tunnelUrl: urls.tunnelUrl,
+            audioUrl: res.audioUrl ? prepareUrls(res.audioUrl).directUrl : null,
             audioTunnelUrl: res.audioUrl ? prepareUrls(res.audioUrl).tunnelUrl : null,
-            title:        res.title,
-            thumbnail:    res.thumbnail,
-            duration:     res.duration,
-            ext:          res.ext,
-            mimeType:     guessMime(`video.${res.ext}`),
+            title: res.title,
+            thumbnail: res.thumbnail,
+            duration: res.duration,
+            ext: res.ext,
+            mimeType: guessMime(`video.${res.ext}`),
             tunnelAllowed: urls.tunnelAllowed,
             strategyUsed: res.strategyUsed,
           };
@@ -1116,15 +1116,15 @@ export const getDownloadLink = async (
           );
           const urls = prepareUrls(res.videoUrl);
           payload = {
-            url:          urls.directUrl,
-            tunnelUrl:    urls.tunnelUrl,
-            audioUrl:     null,
+            url: urls.directUrl,
+            tunnelUrl: urls.tunnelUrl,
+            audioUrl: null,
             audioTunnelUrl: null,
-            title:        res.title,
-            thumbnail:    res.thumbnail,
-            duration:     0,
-            ext:          res.filename.split(".").pop() ?? "mp4",
-            mimeType:     guessMime(res.filename),
+            title: res.title,
+            thumbnail: res.thumbnail,
+            duration: 0,
+            ext: res.filename.split(".").pop() ?? "mp4",
+            mimeType: guessMime(res.filename),
             tunnelAllowed: urls.tunnelAllowed,
           };
           usedTier = "gallerydl";
@@ -1142,15 +1142,15 @@ export const getDownloadLink = async (
           );
           const urls = prepareUrls(res.videoUrl);
           payload = {
-            url:          urls.directUrl,
-            tunnelUrl:    urls.tunnelUrl,
-            audioUrl:     null,
+            url: urls.directUrl,
+            tunnelUrl: urls.tunnelUrl,
+            audioUrl: null,
             audioTunnelUrl: null,
-            title:        res.title,
-            thumbnail:    res.thumbnail,
-            duration:     0,
-            ext:          res.ext,
-            mimeType:     guessMime(res.filename),
+            title: res.title,
+            thumbnail: res.thumbnail,
+            duration: 0,
+            ext: res.ext,
+            mimeType: guessMime(res.filename),
             tunnelAllowed: urls.tunnelAllowed,
           };
           usedTier = "vidbee";
@@ -1170,9 +1170,9 @@ export const getDownloadLink = async (
     responseFinished = true;
     return reply.code(200).send({
       success: true,
-      source:  finalResult.source,
+      source: finalResult.source,
       message: "Download link generated successfully",
-      data:    finalResult.data,
+      data: finalResult.data,
     });
 
   } catch (outerException: any) {
@@ -1188,7 +1188,7 @@ export const getDownloadLink = async (
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const resolveUrl = async (
-  req:   FastifyRequest<{ Querystring: { url: string } }>,
+  req: FastifyRequest<{ Querystring: { url: string } }>,
   reply: FastifyReply,
 ) => {
   const { url } = req.query as { url: string };
@@ -1214,15 +1214,15 @@ export const tunnel = async (req: FastifyRequest, reply: FastifyReply) => {
     try {
       const queryString = req.url.split('?')[1];
       const cobaltTunnelUrl = `${COBALT_URL}/tunnel?${queryString}`;
-      
-      const upstream = await fetch(cobaltTunnelUrl, { 
+
+      const upstream = await fetch(cobaltTunnelUrl, {
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
           "Accept": "*/*",
         },
         signal: AbortSignal.timeout(120_000) // Increased for large Cobalt streams
       });
-      
+
       if (!upstream.ok && upstream.status !== 206) {
         return reply.code(502).send({ success: false, message: `Cobalt tunnel failed: ${upstream.status}` });
       }
@@ -1234,10 +1234,10 @@ export const tunnel = async (req: FastifyRequest, reply: FastifyReply) => {
       reply.header("Accept-Ranges", "bytes");
       reply.header("Cache-Control", "no-store");
       reply.header("Access-Control-Allow-Origin", "*");
-      
+
       const filename = rawFilename ?? `video_${tunnelId}.mp4`;
       reply.header("Content-Disposition", `attachment; filename="${filename.replace(/[^\w.\-]/g, "_")}"`);
-      
+
       return reply.send(upstream.body);
     } catch (err: any) {
       log("error", "tunnel", "Cobalt tunnel fetch error", { error: err?.message });
@@ -1257,24 +1257,63 @@ export const tunnel = async (req: FastifyRequest, reply: FastifyReply) => {
 
   // ★ Allow internal Docker traffic from VidBee to bypass external CDN check
   const isInternalVidBee = targetUrl.startsWith(VIDBEE_API_URL);
-  
+
   if (!isCdnAllowed(targetUrl) && !isInternalVidBee) {
     log("warn", "tunnel", "Blocked non-CDN URL", { url: targetUrl.slice(0, 120) });
     return reply.code(403).send({ success: false, message: "Tunnel target not allowed" });
   }
 
+
   const rangeHeader = (req.headers as any)["range"];
+
+  // Detect platform from URL
+  const isTikTok = targetUrl.includes('tiktok') || targetUrl.includes('tiktokcdn');
+  const isInstagram = targetUrl.includes('cdninstagram') || targetUrl.includes('fbcdn');
+  const isTwitter = targetUrl.includes('twimg');
+  const isYouTube = targetUrl.includes('googlevideo') || targetUrl.includes('youtube');
+  const isFacebook = targetUrl.includes('facebook') || targetUrl.includes('fbcdn');
+
+  // Base headers
   const upstreamHeaders: Record<string, string> = {
-    "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept":          "*/*",
+    "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+    "Accept": "video/webm,video/mp4,video/*;q=0.9,*/*;q=0.8",
     "Accept-Encoding": "identity",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Connection": "keep-alive",
   };
+
   if (rangeHeader) upstreamHeaders["Range"] = rangeHeader;
-  
-  // ★ Don't apply Referer logic to internal Docker network requests
+
+  // Platform-specific headers
   if (!isInternalVidBee) {
-    const referer = getReferer(targetUrl);
-    if (referer) upstreamHeaders["Referer"] = referer;
+    if (isTikTok) {
+      upstreamHeaders["Referer"] = "https://www.tiktok.com/";
+      upstreamHeaders["Origin"] = "https://www.tiktok.com";
+      upstreamHeaders["Sec-Fetch-Dest"] = "video";
+      upstreamHeaders["Sec-Fetch-Mode"] = "no-cors";
+      upstreamHeaders["Sec-Fetch-Site"] = "cross-site";
+    } else if (isInstagram) {
+      upstreamHeaders["Referer"] = "https://www.instagram.com/";
+      upstreamHeaders["Origin"] = "https://www.instagram.com";
+      upstreamHeaders["Sec-Fetch-Dest"] = "video";
+      upstreamHeaders["Sec-Fetch-Mode"] = "no-cors";
+      upstreamHeaders["Sec-Fetch-Site"] = "cross-site";
+    } else if (isFacebook) {
+      upstreamHeaders["Referer"] = "https://www.facebook.com/";
+      upstreamHeaders["Origin"] = "https://www.facebook.com";
+      upstreamHeaders["Sec-Fetch-Dest"] = "video";
+      upstreamHeaders["Sec-Fetch-Mode"] = "no-cors";
+      upstreamHeaders["Sec-Fetch-Site"] = "cross-site";
+    } else if (isTwitter) {
+      upstreamHeaders["Referer"] = "https://twitter.com/";
+      upstreamHeaders["Origin"] = "https://twitter.com";
+    } else if (isYouTube) {
+      upstreamHeaders["Referer"] = "https://www.youtube.com/";
+      upstreamHeaders["Origin"] = "https://www.youtube.com";
+    } else {
+      const referer = getReferer(targetUrl);
+      if (referer) upstreamHeaders["Referer"] = referer;
+    }
   }
 
   try {
@@ -1289,13 +1328,13 @@ export const tunnel = async (req: FastifyRequest, reply: FastifyReply) => {
     const cl = upstream.headers.get("content-length");
     const cr = upstream.headers.get("content-range");
     const ar = upstream.headers.get("accept-ranges");
-    reply.header("Content-Type",             ct);
-    reply.header("Accept-Ranges",            ar ?? "bytes");
-    reply.header("Cache-Control",            "no-store");
-    reply.header("X-Content-Type-Options",   "nosniff");
+    reply.header("Content-Type", ct);
+    reply.header("Accept-Ranges", ar ?? "bytes");
+    reply.header("Cache-Control", "no-store");
+    reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Access-Control-Allow-Origin", "*");
     if (cl) reply.header("Content-Length", cl);
-    if (cr) reply.header("Content-Range",  cr);
+    if (cr) reply.header("Content-Range", cr);
     const filename = rawFilename ?? targetUrl.split("/").pop()?.split("?")[0] ?? "video.mp4";
     reply.header("Content-Disposition", `attachment; filename="${filename.replace(/[^\w.\-]/g, "_")}"`);
     return reply.send(upstream.body);
@@ -1326,21 +1365,21 @@ export const healthCheck = async (_req: FastifyRequest, reply: FastifyReply) => 
   } catch { /* yt-dlp not found */ }
 
   return reply.code(200).send({
-    status:    "ok",
-    version:   "v7.0",
-    uptime:    Math.round(process.uptime()),
-    circuits:  Object.fromEntries(
+    status: "ok",
+    version: "v7.0",
+    uptime: Math.round(process.uptime()),
+    circuits: Object.fromEntries(
       Object.entries(circuitBreakers).map(([k, v]) => [k, { open: v.openUntil > Date.now(), failures: v.failures }])
     ),
-    cobalt:    { reachable: cobaltReachable, ping: cobaltOk },
-    vidbee:    { reachable: vidbeeOk }, // ★ NEW
+    cobalt: { reachable: cobaltReachable, ping: cobaltOk },
+    vidbee: { reachable: vidbeeOk }, // ★ NEW
     semaphore: { running: procSemaphore.runningCount, queued: procSemaphore.queueDepth, max: MAX_CONCURRENT_PROCS },
-    cache:     { backend: REDIS_URL ? "redis" : "memory", entries: cache.size() },
-    proxies:   proxyPool.stats(),
-    ytdlp:     { ageDays: ytdlpAgeDays, stale: ytdlpAgeDays !== null ? ytdlpAgeDays > YTDLP_MAX_AGE_DAYS : null },
-    inFlight:  inFlight.size,
-    memory:    {
-      heapUsedMb:  Math.round(process.memoryUsage().heapUsed  / 1024 / 1024),
+    cache: { backend: REDIS_URL ? "redis" : "memory", entries: cache.size() },
+    proxies: proxyPool.stats(),
+    ytdlp: { ageDays: ytdlpAgeDays, stale: ytdlpAgeDays !== null ? ytdlpAgeDays > YTDLP_MAX_AGE_DAYS : null },
+    inFlight: inFlight.size,
+    memory: {
+      heapUsedMb: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
       heapTotalMb: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
     },
   });
@@ -1371,7 +1410,7 @@ export const mergeVideoAudio = async (req: FastifyRequest, reply: FastifyReply) 
 
   const tmpVideo = join(tmpdir(), `vid_${Date.now()}_v.mp4`);
   const tmpAudio = join(tmpdir(), `vid_${Date.now()}_a.m4a`);
-  const tmpOut   = join(tmpdir(), `vid_${Date.now()}_out.mp4`);
+  const tmpOut = join(tmpdir(), `vid_${Date.now()}_out.mp4`);
 
   try {
     log("info", "merge", "Downloading video stream", { url: decodedVideoUrl.slice(0, 80) });
@@ -1428,8 +1467,8 @@ export const mergeVideoAudio = async (req: FastifyRequest, reply: FastifyReply) 
     log("info", "merge", "Streaming merged file to client");
 
     // Stream result back
-    const { size } = await import("node:fs").then(fs => 
-      new Promise<{ size: number }>((res, rej) => 
+    const { size } = await import("node:fs").then(fs =>
+      new Promise<{ size: number }>((res, rej) =>
         fs.stat(tmpOut, (err, s) => err ? rej(err) : res({ size: s.size }))
       )
     );
@@ -1455,5 +1494,5 @@ export const mergeVideoAudio = async (req: FastifyRequest, reply: FastifyReply) 
 };
 
 export const downloadController = {
-  getVideoInfo, getDownloadLink, resolveUrl, tunnel, healthCheck,mergeVideoAudio
+  getVideoInfo, getDownloadLink, resolveUrl, tunnel, healthCheck, mergeVideoAudio
 };
