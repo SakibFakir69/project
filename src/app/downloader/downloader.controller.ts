@@ -9,6 +9,12 @@ import { execFile } from "node:child_process";
 import { statSync } from "node:fs";
 import { promisify } from "node:util";
 import type { FastifyRequest, FastifyReply } from "fastify";
+import { spawn } from "node:child_process";
+import { createWriteStream, unlinkSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
 
 import { isUrlSafe } from "../../utils/download.utils.js";
 import { getReferer, TIMEOUTS } from "../../constant/index.contant.js";
@@ -1340,6 +1346,114 @@ export const healthCheck = async (_req: FastifyRequest, reply: FastifyReply) => 
   });
 };
 
+
+export const mergeVideoAudio = async (req: FastifyRequest, reply: FastifyReply) => {
+  const { videoUrl, audioUrl } = req.query as { videoUrl?: string; audioUrl?: string };
+
+  if (!videoUrl || !audioUrl) {
+    return reply.code(400).send({ success: false, message: "videoUrl and audioUrl are required" });
+  }
+
+  let decodedVideoUrl: string;
+  let decodedAudioUrl: string;
+
+  try {
+    decodedVideoUrl = decodeURIComponent(videoUrl);
+    decodedAudioUrl = decodeURIComponent(audioUrl);
+  } catch {
+    return reply.code(400).send({ success: false, message: "Invalid URL encoding" });
+  }
+
+  // Validate both are CDN-allowed
+  if (!isCdnAllowed(decodedVideoUrl) || !isCdnAllowed(decodedAudioUrl)) {
+    return reply.code(403).send({ success: false, message: "URL not allowed" });
+  }
+
+  const tmpVideo = join(tmpdir(), `vid_${Date.now()}_v.mp4`);
+  const tmpAudio = join(tmpdir(), `vid_${Date.now()}_a.m4a`);
+  const tmpOut   = join(tmpdir(), `vid_${Date.now()}_out.mp4`);
+
+  try {
+    log("info", "merge", "Downloading video stream", { url: decodedVideoUrl.slice(0, 80) });
+
+    // Download video stream
+    const vRes = await fetch(decodedVideoUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "*/*",
+        "Referer": "https://www.youtube.com/",
+      },
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (!vRes.ok) throw new Error(`Video stream fetch failed: ${vRes.status}`);
+    await pipeline(Readable.fromWeb(vRes.body as any), createWriteStream(tmpVideo));
+
+    log("info", "merge", "Downloading audio stream", { url: decodedAudioUrl.slice(0, 80) });
+
+    // Download audio stream
+    const aRes = await fetch(decodedAudioUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "*/*",
+        "Referer": "https://www.youtube.com/",
+      },
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!aRes.ok) throw new Error(`Audio stream fetch failed: ${aRes.status}`);
+    await pipeline(Readable.fromWeb(aRes.body as any), createWriteStream(tmpAudio));
+
+    log("info", "merge", "Running FFmpeg mux");
+
+    // FFmpeg mux
+    await new Promise<void>((resolve, reject) => {
+      const ff = spawn("ffmpeg", [
+        "-y",
+        "-i", tmpVideo,
+        "-i", tmpAudio,
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-movflags", "+faststart",
+        tmpOut,
+      ]);
+
+      let stderr = "";
+      ff.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+      ff.on("close", (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`FFmpeg exited ${code}: ${stderr.slice(-300)}`));
+      });
+      ff.on("error", reject);
+    });
+
+    log("info", "merge", "Streaming merged file to client");
+
+    // Stream result back
+    const { size } = await import("node:fs").then(fs => 
+      new Promise<{ size: number }>((res, rej) => 
+        fs.stat(tmpOut, (err, s) => err ? rej(err) : res({ size: s.size }))
+      )
+    );
+
+    reply.header("Content-Type", "video/mp4");
+    reply.header("Content-Length", String(size));
+    reply.header("Content-Disposition", `attachment; filename="video_${Date.now()}.mp4"`);
+    reply.header("Cache-Control", "no-store");
+    reply.header("Access-Control-Allow-Origin", "*");
+
+    const fileStream = (await import("node:fs")).createReadStream(tmpOut);
+    return reply.send(fileStream);
+
+  } catch (err: any) {
+    log("error", "merge", "Merge failed", { error: err?.message });
+    return reply.code(502).send({ success: false, message: `Merge failed: ${err?.message}` });
+  } finally {
+    // Cleanup temp files
+    for (const f of [tmpVideo, tmpAudio, tmpOut]) {
+      try { if (existsSync(f)) unlinkSync(f); } catch { /* ignore */ }
+    }
+  }
+};
+
 export const downloadController = {
-  getVideoInfo, getDownloadLink, resolveUrl, tunnel, healthCheck,
+  getVideoInfo, getDownloadLink, resolveUrl, tunnel, healthCheck,mergeVideoAudio
 };

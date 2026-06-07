@@ -19,9 +19,9 @@ export async function downloadRoutes(app: FastifyInstance) {
       },
     },
   }, downloadController.getVideoInfo);
-  
 
-  app.get('/health', downloadController.healthCheck);
+  app.get("/video/merge", downloadController.mergeVideoAudio),
+    app.get('/health', downloadController.healthCheck);
 
   app.get("/resolve-url", downloadController.resolveUrl);
   app.post("/video/download", {
