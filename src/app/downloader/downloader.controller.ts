@@ -1190,7 +1190,16 @@ export const getDownloadLink = async (
     if (!finalResult)
       return reply.code(500).send({ success: false, message: "All extractors exhausted." });
 
-    await cache.set(cacheKey, finalResult.data, cacheTtl(platform));
+    const isCobaltTunnel =
+      finalResult.source === 'cobalt' &&
+      finalResult.data.url?.includes('/tunnel?id=');
+
+    if (!isCobaltTunnel) {
+      await cache.set(cacheKey, finalResult.data, cacheTtl(platform));
+    } else {
+      log('debug', 'download', 'Skipping cache — Cobalt tunnel URL expires in ~90s');
+    }
+
     responseFinished = true;
     return reply.code(200).send({
       success: true,
