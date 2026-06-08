@@ -569,9 +569,14 @@ async function getCobaltDownloadUrl(
     }),
   };
 
-  if (process.env.COBALT_PROXY_ENABLED === "true") {
-    body.alwaysProxy = true;
-  }
+  if (
+  process.env.COBALT_PROXY_ENABLED === "true" ||
+  isTikTok ||
+  platform === "instagram" ||
+  platform === "facebook"
+) {
+  body.alwaysProxy = true;
+}
 
   const response = await fetch(`${COBALT_URL}/`, {
     method: "POST",
