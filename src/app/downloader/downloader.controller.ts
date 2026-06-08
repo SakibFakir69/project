@@ -546,9 +546,9 @@ async function getCobaltDownloadUrl(
   const validQ = ["max", "4320", "2160", "1440", "1080", "720", "480", "360", "240", "144"];
   const videoQuality = validQ.includes(q) ? q : "1080";
   const isTikTok = platform === "tiktok";
+  const isYouTube = platform === "youtube";
 
   const cobaltProxy = proxyPool.pick(platform) ?? proxyPool.pick();
-
   const timeoutSignal = AbortSignal.timeout(25_000);
   const fetchSignal = signal ? AbortSignal.any([timeoutSignal, signal]) : timeoutSignal;
 
@@ -561,6 +561,12 @@ async function getCobaltDownloadUrl(
     audioBitrate: "128",
     youtubeVideoCodec: "h264",
     tiktokFullAudio: isTikTok && downloadMode === "audio",
+
+    // ✅ YouTube — force progressive mp4, no HLS, no H265
+    ...(isYouTube && {
+      youtubeHLS: false,
+      allowH265: false,
+    }),
   };
 
   if (process.env.COBALT_PROXY_ENABLED === "true") {
@@ -603,7 +609,12 @@ async function getCobaltDownloadUrl(
     case "tunnel":
     case "redirect":
       cbSuccess("cobalt");
-      return { url: data.url!, audioUrl: null, filename: data.filename ?? "video.mp4", type: data.status };
+      return {
+        url: data.url!,
+        audioUrl: null,
+        filename: data.filename ?? "video.mp4",
+        type: data.status,
+      };
 
     case "local-processing":
       cbSuccess("cobalt");
@@ -614,15 +625,28 @@ async function getCobaltDownloadUrl(
         type: "local-processing",
       };
 
-    case "picker":
+    case "picker": {
       cbSuccess("cobalt");
-      const bestVideo = data.picker?.find(p => p.type === "video") ?? data.picker?.[0];
+
+      // ✅ Find best video — prefer type=video, fall back to first with a URL
+      const bestVideo =
+        data.picker?.find(p => p.type === "video" && p.url) ??
+        data.picker?.find(p => p.url) ??
+        data.picker?.[0];
+
+      // ✅ Throw if no valid URL — forces fallback to yt-dlp
+      if (!bestVideo?.url) {
+        cbFailure("cobalt");
+        throw new Error("Cobalt picker: no valid video URL found");
+      }
+
       return {
-        url: bestVideo?.url ?? "",
+        url: bestVideo.url,
         audioUrl: (data as any).audio ?? null,
         filename: (data as any).audioFilename ?? "video.mp4",
         type: "picker",
       };
+    }
 
     case "error":
       cbFailure("cobalt");
@@ -1229,7 +1253,8 @@ export const tunnel = async (req: FastifyRequest, reply: FastifyReply) => {
 
       reply.status(upstream.status);
       reply.header("Content-Type", upstream.headers.get("content-type") ?? "video/mp4");
-      reply.header("Content-Length", upstream.headers.get("content-length") ?? "");
+      const contentLength = upstream.headers.get("content-length");
+      if (contentLength) reply.header("Content-Length", contentLength);
       reply.header("Content-Range", upstream.headers.get("content-range") ?? "");
       reply.header("Accept-Ranges", "bytes");
       reply.header("Cache-Control", "no-store");
