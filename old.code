@@ -2,138 +2,324 @@
 
 test + downloading url + use tunnel
 
+6/12/26
 
----------------
-new
-// ── Short URL resolver ────────────────────────────────────────────────────────
-async function resolveRedirectUrl(url: string): Promise<string> {
-  const isShort = /vt\.tiktok|vm\.tiktok|pin\.it|fb\.watch|redd\.it|youtu\.be|t\.co/i.test(url);
-  if (!isShort && !url.includes('/share/')) return url;
+export const tunnel = async (req: FastifyRequest, reply: FastifyReply) => {
+  const { url: rawUrl, filename: rawFilename, id: tunnelId } = req.query as { url?: string; filename?: string; id?: string };
 
-  log("debug", "resolver", "Attempting to resolve short URL", { url: url.slice(0, 80) });
+  if (tunnelId && !rawUrl) {
+    try {
+      const queryString = req.url.split('?')[1];
+      const cobaltTunnelUrl = `${COBALT_URL}/tunnel?${queryString}`;
 
-  // Strategy 1: fetch with redirect:follow (works for most)
-  try {
-    const res = await fetch(url, {
-      method:   "GET",
-      redirect: "follow",
-      signal:   AbortSignal.timeout(8_000),
-      headers: {
-        "User-Agent":       "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-        "Accept":           "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language":  "en-US,en;q=0.9",
-      },
-    });
-
-    res.body?.cancel();
-    const resolved = res.url || url;
-
-    if (resolved !== url && !resolved.includes('vt.tiktok') && !resolved.includes('vm.tiktok')) {
-      log("debug", "resolver", "Strategy 1 resolved", { from: url.slice(0, 80), to: resolved.slice(0, 120) });
-      return resolved;
-    }
-  } catch (e: any) {
-    log("warn", "resolver", "Strategy 1 failed", { error: e?.message });
-  }
-
-  // Strategy 2: manual redirect chain (for TikTok which needs extra hops)
-  try {
-    let current = url;
-    let hops    = 0;
-    const MAX_HOPS = 5;
-
-    while (hops < MAX_HOPS) {
-      const res = await fetch(current, {
-        method:   "GET",
-        redirect: "manual",   // ← manual so we can follow each hop ourselves
-        signal:   AbortSignal.timeout(5_000),
+      const upstream = await fetch(cobaltTunnelUrl, {
         headers: {
-          "User-Agent":      "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-          "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-          "Accept-Language": "en-US,en;q=0.9",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+          "Accept": "*/*",
         },
+        signal: AbortSignal.timeout(120_000)
       });
 
-      res.body?.cancel();
-
-      const location = res.headers.get("location");
-
-      log("debug", "resolver", `Hop ${hops + 1}`, {
-        from:     current.slice(0, 80),
-        status:   res.status,
-        location: location?.slice(0, 120) ?? "none",
-      });
-
-      // Not a redirect — we have arrived
-      if (res.status < 300 || res.status >= 400 || !location) {
-        if (current !== url) {
-          log("debug", "resolver", "Strategy 2 resolved", { from: url.slice(0, 80), to: current.slice(0, 120) });
-          return current;
-        }
-        break;
+      if (!upstream.ok && upstream.status !== 206) {
+        return reply.code(502).send({ success: false, message: `Cobalt tunnel failed: ${upstream.status}` });
       }
 
-      // Resolve relative redirects
-      current = location.startsWith("http") ? location : new URL(location, current).href;
-      hops++;
+      // ✅ Check Cobalt stream size limit
+      const contentLength = upstream.headers.get("content-length");
+      if (contentLength && parseInt(contentLength, 10) > MAX_FILE_SIZE_BYTES) {
+        log("warn", "tunnel", "Cobalt stream exceeds 100MB limit", { size: contentLength });
+        upstream.body?.cancel();
+        return reply.code(413).send({ success: false, message: "File size exceeds the 100 MB limit." });
+      }
+
+      reply.status(upstream.status);
+      reply.header("Content-Type", upstream.headers.get("content-type") ?? "video/mp4");
+      if (contentLength) reply.header("Content-Length", contentLength);
+      reply.header("Content-Range", upstream.headers.get("content-range") ?? "");
+      reply.header("Accept-Ranges", "bytes");
+      reply.header("Cache-Control", "no-store");
+      reply.header("Access-Control-Allow-Origin", "*");
+
+      const filename = rawFilename ?? `video_${tunnelId}.mp4`;
+      reply.header("Content-Disposition", `attachment; filename="${filename.replace(/[^\w.\-]/g, "_")}"`);
+
+      return reply.send(upstream.body);
+    } catch (err: any) {
+      log("error", "tunnel", "Cobalt tunnel fetch error", { error: err?.message });
+      return reply.code(502).send({ success: false, message: "Cobalt tunnel upstream unreachable" });
     }
-  } catch (e: any) {
-    log("warn", "resolver", "Strategy 2 failed", { error: e?.message });
   }
 
-  // Strategy 3: curl via execFile (most reliable for TikTok — bypasses Node fetch issues)
-  try {
-    const { stdout } = await execFilePromise("curl", [
-      "-s",                  // silent
-      "-o", "/dev/null",     // discard body
-      "-w", "%{url_effective}", // print final URL only
-      "-L",                  // follow redirects
-      "--max-redirs", "5",
-      "--connect-timeout", "8",
-      "-A", "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-      url,
-    ], { encoding: "utf8", timeout: 10_000 });
+  if (!rawUrl) return reply.code(400).send({ success: false, message: "url query param is required" });
 
-    const resolved = (stdout as string).trim();
-    if (resolved && resolved !== url && resolved.startsWith("http")) {
-      log("debug", "resolver", "Strategy 3 (curl) resolved", { from: url.slice(0, 80), to: resolved.slice(0, 120) });
-      return resolved;
+  let targetUrl: string;
+  try { targetUrl = decodeURIComponent(rawUrl); } catch {
+    return reply.code(400).send({ success: false, message: "Invalid url encoding" });
+  }
+
+  if (!/^https?:\/\//i.test(targetUrl))
+    return reply.code(400).send({ success: false, message: "Invalid tunnel target URL" });
+
+  const isInternalCobalt = targetUrl.startsWith(COBALT_URL) && targetUrl.includes('/tunnel?id=');
+
+  if (!isCdnAllowed(targetUrl) && !isInternalCobalt) {
+    log("warn", "tunnel", "Blocked non-CDN URL", { url: targetUrl.slice(0, 120) });
+    return reply.code(403).send({ success: false, message: "Tunnel target not allowed" });
+  }
+
+  const rangeHeader = (req.headers as any)["range"];
+
+  // Detect platform from URL
+  const isTikTok = targetUrl.includes('tiktok') || targetUrl.includes('tiktokcdn');
+  const isInstagram = targetUrl.includes('cdninstagram') || targetUrl.includes('fbcdn');
+  const isTwitter = targetUrl.includes('twimg');
+  const isYouTube = targetUrl.includes('googlevideo') || targetUrl.includes('youtube');
+  const isFacebook = targetUrl.includes('facebook') || targetUrl.includes('fbcdn');
+
+  // Base headers
+  const upstreamHeaders: Record<string, string> = {
+    "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+    "Accept": "video/webm,video/mp4,video/*;q=0.9,*/*;q=0.8",
+    "Accept-Encoding": "identity",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Connection": "keep-alive",
+  };
+
+  if (rangeHeader) upstreamHeaders["Range"] = rangeHeader;
+
+  // Platform-specific headers
+  if (!isInternalCobalt) {
+    if (isTikTok) {
+      upstreamHeaders["Referer"] = "https://www.tiktok.com/";
+      upstreamHeaders["Origin"] = "https://www.tiktok.com";
+      upstreamHeaders["Sec-Fetch-Dest"] = "video";
+      upstreamHeaders["Sec-Fetch-Mode"] = "no-cors";
+      upstreamHeaders["Sec-Fetch-Site"] = "cross-site";
+    } else if (isInstagram) {
+      upstreamHeaders["Referer"] = "https://www.instagram.com/";
+      upstreamHeaders["Origin"] = "https://www.instagram.com";
+      upstreamHeaders["Sec-Fetch-Dest"] = "video";
+      upstreamHeaders["Sec-Fetch-Mode"] = "no-cors";
+      upstreamHeaders["Sec-Fetch-Site"] = "cross-site";
+    } else if (isFacebook) {
+      upstreamHeaders["Referer"] = "https://www.facebook.com/";
+      upstreamHeaders["Origin"] = "https://www.facebook.com";
+      upstreamHeaders["Sec-Fetch-Dest"] = "video";
+      upstreamHeaders["Sec-Fetch-Mode"] = "no-cors";
+      upstreamHeaders["Sec-Fetch-Site"] = "cross-site";
+    } else if (isTwitter) {
+      upstreamHeaders["Referer"] = "https://twitter.com/";
+      upstreamHeaders["Origin"] = "https://twitter.com";
+    } else if (isYouTube) {
+      upstreamHeaders["Referer"] = "https://www.youtube.com/";
+      upstreamHeaders["Origin"] = "https://www.youtube.com";
+    } else {
+      const referer = getReferer(targetUrl);
+      if (referer) upstreamHeaders["Referer"] = referer;
     }
-  } catch (e: any) {
-    log("warn", "resolver", "Strategy 3 (curl) failed", { error: e?.message });
   }
-
-  log("warn", "resolver", "All strategies failed — returning original URL", { url: url.slice(0, 80) });
-  return url;
-}
-----
-old
-----async function resolveRedirectUrl(url: string): Promise<string> {
-  const isShort = /vt\.tiktok|vm\.tiktok|pin\.it|fb\.watch|redd\.it|youtu\.be|t\.co/i.test(url);
-  if (!isShort && !url.includes('/share/')) return url;
 
   try {
-    const res = await fetch(url, {
-      method: "GET",
-      redirect: "follow",
-      signal: AbortSignal.timeout(8_000),
-      headers: {
-        // Mobile UA is crucial for TikTok/Instagram short links to redirect properly
-        "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-      },
-    });
-    
-    // Cancel the body stream to prevent downloading the actual page/video file
-    // We only care about the final redirected URL
-    res.body?.cancel();
+    const upstream = await fetch(targetUrl, { headers: upstreamHeaders, signal: AbortSignal.timeout(180_000) });
+    if (!upstream.ok && upstream.status !== 206) {
+      log("error", "tunnel", "Upstream error", { status: upstream.status, isInternalCobalt });
+      return reply.code(502).send({ success: false, message: `Upstream returned ${upstream.status}` });
+    }
 
-    const resolved = res.url || url;
-    if (resolved !== url)
-      log("debug", "resolver", "Resolved redirect", { from: url.slice(0, 80), to: resolved.slice(0, 120) });
+    // ✅ Check stream size limit
+    const contentLength = upstream.headers.get("content-length");
+    if (contentLength && parseInt(contentLength, 10) > MAX_FILE_SIZE_BYTES) {
+      log("warn", "tunnel", "Direct stream exceeds 100MB limit", { size: contentLength });
+      upstream.body?.cancel();
+      return reply.code(413).send({ success: false, message: "File size exceeds the 100 MB limit." });
+    }
+
+    reply.status(upstream.status);
+    const ct = upstream.headers.get("content-type") ?? guessMime(rawFilename ?? targetUrl);
+    const cr = upstream.headers.get("content-range");
+    const ar = upstream.headers.get("accept-ranges");
+    reply.header("Content-Type", ct);
+    reply.header("Accept-Ranges", ar ?? "bytes");
+    reply.header("Cache-Control", "no-store");
+    reply.header("X-Content-Type-Options", "nosniff");
+    reply.header("Access-Control-Allow-Origin", "*");
+    if (contentLength) reply.header("Content-Length", contentLength);
+    if (cr) reply.header("Content-Range", cr);
     
-    // 🔴 FIX: DO NOT strip query parameters. Extractors need them for signature validation.
-    return resolved;
-  } catch {
-    return url;
+    const filename = rawFilename ?? targetUrl.split("/").pop()?.split("?")[0] ?? "video.mp4";
+    reply.header("Content-Disposition", `attachment; filename="${filename.replace(/[^\w.\-]/g, "_")}"`);
+    return reply.send(upstream.body);
+  } catch (err: any) {
+    log("error", "tunnel", "Fetch error", { error: err?.message });
+    return reply.code(502).send({ success: false, message: "Tunnel upstream unreachable" });
   }
+};
+
+
+
+-------------- GAVE CLAUDE -----------
+
+Recommended architecture
+User
+ ↓
+API
+ ↓
+Redis Cache
+ ↓
+BullMQ Queue
+ ↓
+Worker
+ ↓
+yt-dlp / Cobalt
+ ↓
+Download actual file
+ ↓
+Cloudflare R2
+ ↓
+CDN URL
+ ↓
+User
+
+Advantages:
+
+✅ No TikTok CDN expiry
+
+✅ No Instagram CDN expiry
+
+✅ No tunnel bottleneck
+
+✅ Better caching
+
+✅ Easier horizontal scaling
+
+✅ Mobile app gets a stable URL
+
+Fix #1: Remove tunnel
+
+Right now:
+
+return {
+   tunnelUrl:
+   `/tunnel?url=${videoUrl}`
 }
+
+Remove that.
+
+Fix #2: Download file server-side
+
+Worker:
+
+yt-dlp -o temp.mp4 URL
+
+Now you have the actual video.
+
+Fix #3: Upload to storage
+
+For 100K–1M downloads/month use:
+
+Cloudflare R2
+
+Store:
+
+videos/abc123.mp4
+Fix #4: Return your own CDN URL
+
+Instead of:
+
+v19-webapp-prime.tiktok.com
+
+return:
+
+cdn.yourapp.com/abc123.mp4
+
+Now TikTok cannot return 403 to users.
+
+Fix #5: Redis cache
+
+When the same video is requested:
+
+10000 users
+
+don't run yt-dlp 10000 times.
+
+Cache:
+
+sha256(url)
+
+Store:
+
+{
+  "cdnUrl":"..."
+}
+
+TTL:
+
+24h
+Fix #6: BullMQ queue
+
+Install:
+
+npm install bullmq ioredis
+
+Flow:
+
+API
+ ↓
+Queue
+ ↓
+Worker
+ ↓
+yt-dlp
+
+Your API stays fast even under heavy load.
+
+Fix #7: Multiple workers
+
+For 1M/month:
+
+worker-1
+worker-2
+worker-3
+worker-4
+worker-5
+
+Each:
+
+concurrency: 4
+
+Total:
+
+20 downloads simultaneously
+Fix #8: Update yt-dlp automatically
+0 */6 * * * yt-dlp -U
+
+Every 6 hours.
+
+TikTok changes often.
+
+Fix #9: Multiple extraction engines
+
+Use:
+
+1. yt-dlp
+2. Cobalt
+3. Custom extractor
+
+If one breaks, others work.
+
+What I would change in your code today
+
+Your logs prove:
+
+yt-dlp SUCCESS
+tunnel FAILED
+403 FROM TIKTOK
+
+The first thing I'd remove is:
+
+/ tunnel
+
+for TikTok downloads.
+
+Download the file immediately after yt-dlp succeeds, upload it to R2, and return your own CDN URL. That eliminates the exact 403 →
+add tunnel aws fallback

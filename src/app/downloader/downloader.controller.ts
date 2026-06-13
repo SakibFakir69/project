@@ -262,6 +262,7 @@ function prepareUrls(raw: string): PreparedUrls {
 
   const cobaltTunnel = prepareCobaltTunnelUrl(raw);
   if (cobaltTunnel) {
+
     return {
       directUrl: cobaltTunnel,
       tunnelUrl: cobaltTunnel,
@@ -880,6 +881,61 @@ async function getGalleryDlDownloadUrl(
 }
 
 // ── Mime helper ───────────────────────────────────────────────────────────────
+// ── TikTok/Instagram direct server-side download ──────────────────────────────
+
+async function streamYtDlpDirect(
+  url: string,
+  platform: Platform,
+  quality: string,
+  reply: FastifyReply,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const tmpFile = join(tmpdir(), `dl_${Date.now()}_${Math.random().toString(36).slice(2)}.mp4`);
+
+  try {
+    const ctx = buildAttemptContext(url, platform, 0, signal);
+    const adapter = getAdapter(platform);
+    const strategy = adapter.formatStrategies[0];
+
+    const args = buildYtDlpArgs(url, platform, ctx, [
+      "-f", strategy,
+      "--max-filesize", "100m",
+      "-o", tmpFile,
+      "--no-part",
+      "--merge-output-format", "mp4",
+    ]);
+
+    log("info", "ytdlp-direct", "Downloading to temp file", { url: url.slice(0, 80), platform });
+
+    await withSemaphore(() =>
+      execFilePromise("yt-dlp", args, { ...EXEC_OPTS, timeout: 120_000 })
+    );
+
+    if (!existsSync(tmpFile)) throw new Error("yt-dlp: output file not found");
+
+    const { size } = statSync(tmpFile);
+    if (size > MAX_FILE_SIZE_BYTES) throw new Error("File size exceeds the 100 MB limit");
+    if (size === 0) throw new Error("yt-dlp: output file is empty");
+
+    log("info", "ytdlp-direct", "Streaming to client", { sizeBytes: size, platform });
+
+    reply.header("Content-Type", "video/mp4");
+    reply.header("Content-Length", String(size));
+    reply.header("Content-Disposition", `attachment; filename="${platform}_${Date.now()}.mp4"`);
+    reply.header("Cache-Control", "no-store");
+    reply.header("Access-Control-Allow-Origin", "*");
+
+    const { createReadStream } = await import("node:fs");
+    await reply.send(createReadStream(tmpFile));
+    return true;
+
+  } catch (err: any) {
+    log("error", "ytdlp-direct", "Direct download failed", { error: err?.message, platform });
+    return false;
+  } finally {
+    try { if (existsSync(tmpFile)) unlinkSync(tmpFile); } catch { /* ignore */ }
+  }
+}
 
 function guessMime(filename: string): string {
   const ext = (filename.split(".").pop() ?? "").toLowerCase();
@@ -1008,9 +1064,22 @@ export const getDownloadLink = async (
     return reply.code(400).send({ success: false, message: "Invalid or unsupported URL" });
 
   const platform = detectPlatform(resolvedUrl);
+
+  // TikTok & Instagram CDN URLs are session-bound and expire in ~2 seconds.
+  // Tunneling them always causes 403. Download server-side and stream directly.
+  if (platform === "tiktok" || platform === "instagram") {
+    const clientAbort = new AbortController();
+    req.raw.on("close", () => clientAbort.abort());
+    log("info", "download", `Direct server-side download for ${platform}`, { url: resolvedUrl.slice(0, 80) });
+    const ok = await streamYtDlpDirect(resolvedUrl, platform, quality, reply, clientAbort.signal);
+    if (ok) return;
+    log("warn", "download", `Direct download failed for ${platform}, falling through to tier chain`);
+  }
+
   const cacheKey = `download:${platform}:${type}:${quality}:${audioFormat}:${resolvedUrl}`;
 
   const cached = await cache.get(cacheKey);
+
   if (cached) {
     log("debug", "download", "Cache HIT", { url: resolvedUrl.slice(0, 80) });
     return reply.code(200).send({ success: true, source: "cache", message: "Download link generated successfully", data: cached });
@@ -1315,10 +1384,11 @@ export const tunnel = async (req: FastifyRequest, reply: FastifyReply) => {
     reply.header("Access-Control-Allow-Origin", "*");
     if (contentLength) reply.header("Content-Length", contentLength);
     if (cr) reply.header("Content-Range", cr);
-    
+
     const filename = rawFilename ?? targetUrl.split("/").pop()?.split("?")[0] ?? "video.mp4";
     reply.header("Content-Disposition", `attachment; filename="${filename.replace(/[^\w.\-]/g, "_")}"`);
     return reply.send(upstream.body);
+
   } catch (err: any) {
     log("error", "tunnel", "Fetch error", { error: err?.message });
     return reply.code(502).send({ success: false, message: "Tunnel upstream unreachable" });
@@ -1473,11 +1543,11 @@ export const mergeVideoAudio = async (req: FastifyRequest, reply: FastifyReply) 
 
   } catch (err: any) {
     log("error", "merge", "Merge failed", { error: err?.message });
-    
+
     if (err?.message?.includes("100 MB limit")) {
       return reply.code(413).send({ success: false, message: err.message });
     }
-    
+
     return reply.code(502).send({ success: false, message: `Merge failed: ${err?.message}` });
   } finally {
     // Cleanup temp files
